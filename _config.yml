@@ -1,0 +1,40 @@
+# GitHub Pages Jekyll Configuration
+# Theme: Minimal Mistakes or Just the Docs (modify as needed)
+
+title: "OVHcloud MKS Platform Documentation"
+description: "Complete guide to deploying and operating Funnel TES on OVHcloud MKS with Cromwell"
+author: "CMG Antwerpen"
+baseurl: "/k8s"  # Change to repository name if deploying as project site
+url: "https://github.com/cmgantwerpen"
+
+# Jekyll theme
+theme: jekyll-theme-minimal
+
+# Markdown processor
+markdown: kramdown
+
+# Navigation
+nav:
+  - title: "Home"
+    url: "/"
+  - title: "Installation Guide"
+    url: "/installation-guide/"
+  - title: "Container Images"
+    url: "/container-images/"
+  - title: "OVH CLI Guide"
+    url: "/ovh-cli-guide/"
+  - title: "Cost & Infrastructure"
+    url: "/cost-and-infra/"
+
+# Additional configurations
+plugins:
+  - jekyll-seo-tag
+  - jekyll-github-metadata
+
+exclude:
+  - "*.sh"
+  - ".git"
+  - "node_modules"
+  - "Dockerfile"
+  - "go.mod"
+  - "Makefile"
