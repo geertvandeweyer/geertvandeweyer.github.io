@@ -1,5 +1,4 @@
 # GitHub Pages Jekyll Configuration
-# Theme: Minimal Mistakes or Just the Docs (modify as needed)
 
 title: "Deployment & Infrastructure Documentation"
 description: "Complete guides for Cromwell, TES (Funnel), and Karpenter across cloud platforms"
@@ -7,24 +6,11 @@ author: "Geert Van de Weyer"
 baseurl: ""  # User site (geertvandeweyer.github.io), no baseurl needed
 url: "https://geertvandeweyer.github.io"
 
-# Jekyll theme
-theme: jekyll-theme-minimal
+# Jekyll theme (Architect for wider layout)
+theme: jekyll-theme-architect
 
 # Markdown processor
 markdown: kramdown
-
-# Navigation
-nav:
-  - title: "Home"
-    url: "/"
-  - title: "Installation Guide"
-    url: "/installation-guide/"
-  - title: "Container Images"
-    url: "/container-images/"
-  - title: "OVH CLI Guide"
-    url: "/ovh-cli-guide/"
-  - title: "Cost & Infrastructure"
-    url: "/cost-and-infra/"
 
 # Additional configurations
 plugins:

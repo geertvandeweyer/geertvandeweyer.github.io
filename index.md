@@ -17,40 +17,42 @@ permalink: /
 
 Run **high-throughput genomic workflows** (WDL/CWL) with:
 
-- **Cromwell**: Workflow language execution engine (WDL, CWL)
-- **Funnel TES**: Task Execution Service (GA4GH standard)
-- **Kubernetes**: Any managed or self-hosted cluster
+- **Cromwell**: Workflow language execution engine (WDL, CWL) — can run on-prem or in-cloud
+- **Funnel TES**: Task Execution Service (GA4GH standard) — runs in Kubernetes
+- **Kubernetes**: Any managed or self-hosted cluster (OVH, AWS, GCP, etc.)
 - **Cloud Storage**: S3, NFS, or cloud-native options
 - **Auto-scaling**: Karpenter-managed worker pools
 
+### Architecture
+
 ```
-┌─────────────────┐
-│ User Workflows  │ (WDL/CWL files)
-│ (Cromwell)      │
-└────────┬────────┘
-         │
-         ↓
-    ┌─────────────────────────────┐
-    │  Kubernetes Cluster         │ ← Any cloud (OVH, AWS, GCP, etc.)
-    │  ┌─────────────────────────┐│
-    │  │ Cromwell  (orchestrator) ││
-    │  │ Funnel TES (task exec)   ││
-    │  │ Karpenter (autoscaler)   ││
-    │  └─────────────────────────┘│
-    │  ┌─────────────────────────┐│
-    │  │ Task Pods (worker nodes) ││
-    │  │ (auto-scaled on demand)  ││
-    │  └─────────────────────────┘│
-    │  ┌─────────────────────────┐│
-    │  │ Storage (S3/NFS/etc.)    ││
-    │  └─────────────────────────┘│
-    └─────────────────────────────┘
-         │
-         ↓
-    ┌─────────────────┐
-    │ Results/Outputs │
-    │ (Cloud Storage) │
-    └─────────────────┘
+┌──────────────────────────┐
+│  Cromwell Workflow       │  (on-prem, cloud, or local)
+│  Engine                  │  (submits tasks to TES)
+└────────────┬─────────────┘
+             │ WDL/CWL tasks
+             ↓
+    ┌────────────────────────────────┐
+    │  Kubernetes Cluster            │  (OVH, AWS, GCP, etc.)
+    │  ┌──────────────────────────┐  │
+    │  │ Funnel TES               │  │
+    │  │ (task executor)          │  │
+    │  └──────────────────────────┘  │
+    │  ┌──────────────────────────┐  │
+    │  │ Task Pods (workers)      │  │
+    │  │ (auto-scaled on demand)  │  │
+    │  └──────────────────────────┘  │
+    │  ┌──────────────────────────┐  │
+    │  │ Storage                  │  │
+    │  │ (S3/NFS/Cloud storage)   │  │
+    │  └──────────────────────────┘  │
+    └────────────────────────────────┘
+             │
+             ↓
+    ┌────────────────────┐
+    │ Results/Outputs    │
+    │ (Cloud Storage)    │
+    └────────────────────┘
 ```
 
 ---
@@ -75,6 +77,25 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
 
 - **[Karpenter](/karpenter/)** — Kubernetes Auto-scaling (Optional)
   - Architecture & NodePools
+### Platform-Agnostic (Cloud-independent)
+
+**Learn the core components that work on any Kubernetes:**
+
+- **[TES (Funnel)](/tes/)** — Task Execution Service
+  - Architecture & design patterns
+  - Container images & builds
+  - Configuration & troubleshooting
+  - [Architecture deep-dive](/tes/architecture/)
+  - [Container images reference](/tes/container-images/)
+
+- **[Cromwell](/cromwell/)** — Workflow Orchestration Engine
+  - Configuration & backends
+  - Workflow submission & monitoring
+  - Integration with TES
+  - Troubleshooting
+
+- **[Karpenter](/karpenter/)** — Kubernetes Auto-scaling (Optional)
+  - Architecture & NodePools
   - Configuration for cloud providers
   - Troubleshooting scaling issues
 
@@ -83,7 +104,7 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
 **Deploy to your chosen cloud:**
 
 - **[OVHcloud](/ovh/)** — OVH MKS + Manila NFS + S3
-  - 7-phase installation guide
+  - [7-phase installation guide](/ovh/installation-guide/)
   - OVH CLI commands & tools
   - Cost & capacity planning
   - Troubleshooting for OVH specifics

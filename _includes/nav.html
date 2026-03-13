@@ -1,0 +1,86 @@
+<!-- Navigation Sidebar -->
+<nav class="site-nav">
+  <h3>Documentation</h3>
+  <ul>
+    <li><a href="/">Home</a></li>
+    <li><a href="/quick-reference/">Quick Reference</a></li>
+  </ul>
+  
+  <h4>Platform-Agnostic</h4>
+  <ul>
+    <li><a href="/tes/">TES (Funnel)</a>
+      <ul>
+        <li><a href="/tes/architecture/">Architecture</a></li>
+        <li><a href="/tes/container-images/">Container Images</a></li>
+      </ul>
+    </li>
+    <li><a href="/cromwell/">Cromwell</a></li>
+    <li><a href="/karpenter/">Karpenter</a></li>
+  </ul>
+  
+  <h4>Cloud Implementations</h4>
+  <ul>
+    <li><a href="/ovh/">OVHcloud</a>
+      <ul>
+        <li><a href="/ovh/installation-guide/">Installation Guide</a></li>
+      </ul>
+    </li>
+    <li><a href="/aws/">AWS</a></li>
+  </ul>
+</nav>
+
+<style>
+.site-nav {
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 15px;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+.site-nav h3 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 16px;
+  border-bottom: 2px solid #0366d6;
+  padding-bottom: 5px;
+}
+
+.site-nav h4 {
+  margin-top: 15px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #333;
+}
+
+.site-nav ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.site-nav > ul > li {
+  margin-bottom: 5px;
+}
+
+.site-nav ul ul {
+  margin-left: 15px;
+  margin-top: 5px;
+  padding-left: 0;
+}
+
+.site-nav ul ul li {
+  margin-bottom: 3px;
+  font-size: 13px;
+}
+
+.site-nav a {
+  color: #0366d6;
+  text-decoration: none;
+}
+
+.site-nav a:hover {
+  text-decoration: underline;
+}
+</style>

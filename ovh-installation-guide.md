@@ -2,7 +2,7 @@
 layout: default
 title: "Installation Guide"
 description: "7-phase deployment guide for OVHcloud MKS + Funnel + Cromwell"
-permalink: /installation-guide/
+permalink: /ovh/installation-guide/
 ---
 
 # OVHcloud MKS + Cromwell + Funnel Installation Guide

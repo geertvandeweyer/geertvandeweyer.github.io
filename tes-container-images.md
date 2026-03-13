@@ -2,7 +2,7 @@
 layout: default
 title: "Container Images"
 description: "Custom image management, builds, and dependencies"
-permalink: /container-images/
+permalink: /tes/container-images/
 ---
 
 # Container Images Reference
