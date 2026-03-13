@@ -1,11 +1,11 @@
 # GitHub Pages Jekyll Configuration
 # Theme: Minimal Mistakes or Just the Docs (modify as needed)
 
-title: "OVHcloud MKS Platform Documentation"
-description: "Complete guide to deploying and operating Funnel TES on OVHcloud MKS with Cromwell"
-author: "CMG Antwerpen"
-baseurl: "/k8s"  # Change to repository name if deploying as project site
-url: "https://github.com/cmgantwerpen"
+title: "Deployment & Infrastructure Documentation"
+description: "Complete guides for Cromwell, TES (Funnel), and Karpenter across cloud platforms"
+author: "Geert Van de Weyer"
+baseurl: ""  # User site (geertvandeweyer.github.io), no baseurl needed
+url: "https://geertvandeweyer.github.io"
 
 # Jekyll theme
 theme: jekyll-theme-minimal
