@@ -23,11 +23,12 @@ permalink: /ovh/installation-guide/
 5. [Phase 2: Node Pools & Autoscaling](#phase-2-node-pools--autoscaling)
 6. [Phase 3: Manila NFS Shared Storage](#phase-3-manila-nfs-shared-storage)
 7. [Phase 4: S3 Object Storage](#phase-4-s3-object-storage)
-8. [Phase 5: Deploy Funnel TES](#phase-5-deploy-funnel-tes)
-9. [Phase 6: Configure Cromwell](#phase-6-configure-cromwell)
-10. [Phase 7: Verification & Testing](#phase-7-verification--testing)
-11. [Container Images](#container-images)
-12. [Troubleshooting](#troubleshooting)
+8. [Phase 4.5: Private Container Registry](#phase-45-private-container-registry)
+9. [Phase 5: Deploy Funnel TES](#phase-5-deploy-funnel-tes)
+10. [Phase 6: Configure Cromwell](#phase-6-configure-cromwell)
+11. [Phase 7: Verification & Testing](#phase-7-verification--testing)
+12. [Container Images](#container-images)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -42,6 +43,8 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
   - **Manila NFS** (150 GB ReadWriteMany) for shared workflow data
   - **S3 Object Storage** (OVH-compatible) for task inputs/outputs/logs
   - **Cinder Volumes** (per-node, auto-expanding with LUKS encryption) for local task disk
+- **Registry**: 
+  - **OVH Managed Private Registry (MPR)** for custom task container images
 
 ### Architecture Diagram
 
@@ -523,6 +526,321 @@ kubectl run -n funnel s3-test --rm -it \
 - [ ] Kubernetes Secret `ovh-s3-credentials` exists
 - [ ] Secret contains valid access key & secret
 - [ ] Bucket is accessible via `aws s3 ls`
+
+---
+
+## Phase 4.5: Private Container Registry
+
+### What Happens
+
+This phase:
+
+1. Creates an **OVH Managed Private Registry (MPR)** named `tes-mpr` — a Harbor-based container registry
+2. Generates **Harbor admin credentials** for the registry
+3. Creates a **Harbor project** (namespace) for your images
+4. Configures **nerdctl registry auth** on worker nodes so Funnel can pull private task images
+5. Optionally sets up **K8s `imagePullSecrets`** for the Funnel worker pod image itself
+
+### Why a Private Registry?
+
+- **Control**: Store custom bioinformatics images (GATK wrappers, pipeline tools, etc.)
+- **Security**: Private images not exposed to public Docker Hub
+- **Performance**: Low-latency pulls within OVHcloud infrastructure (same region)
+- **Vulnerability scanning**: M/L plans include Trivy for automatic scanning
+- **Harbor UI**: Web interface for managing images, users, projects, and RBAC
+
+### Architecture
+
+> **Important**: Funnel uses `nerdctl` (not Kubernetes) to pull and run task container images.
+> This means Kubernetes `imagePullSecrets` do **not** apply to task images.
+> Instead, registry credentials must be configured at the **nerdctl/containerd** level on each worker node.
+
+```
+┌──────────────────────────────────────────────────┐
+│  OVH Managed Private Registry (Harbor)           │
+│  Name: tes-mpr                                   │
+│  URL: xxxxxxxx.gra9.container-registry.ovh.net   │
+│  (S plan: 200 GB, 15 concurrent connections)     │
+└───────────┬──────────────────────────────────────┘
+            │
+            │ (1) K8s imagePullSecrets → pulls Funnel worker image
+            │ (2) nerdctl login → pulls task container images
+            │
+   ┌────────▼─────────────────────────────────────────┐
+   │  Kubernetes Cluster (MKS)                        │
+   │  ┌────────────────────────────────────────────┐  │
+   │  │ Funnel Worker Pod                          │  │
+   │  │  ├─ image: <registry>/funnel:tag  ← (1)   │  │
+   │  │  └─ nerdctl pull <registry>/task:tag ← (2) │  │
+   │  └────────────────────────────────────────────┘  │
+   └──────────────────────────────────────────────────┘
+```
+
+### OVH Plans
+
+| Plan | Storage | Connections | Vuln. Scanning | Use Case |
+|------|---------|-------------|----------------|----------|
+| **S** | 200 GB | 15 | ❌ | Small projects, testing |
+| **M** | 200 GB | 45 | ✅ Trivy | SMEs, product teams |
+| **L** | 5 TB | 90 | ✅ Trivy | Large orgs, intensive use |
+
+### Step 1: Create the Registry
+
+**Via OVH Control Panel (recommended for first-time setup):**
+
+1. Go to **OVHcloud Manager** → **Public Cloud** → your project
+2. Navigate to **Containers & Orchestration** → **Managed Private Registry**
+3. Click **Create a private registry**
+4. Select region: **GRA9** (same as your MKS cluster)
+5. Name: **tes-mpr**
+6. Plan: **S** (small — sufficient for most bioinformatics projects)
+7. Wait for status to change to **OK** (1-2 minutes)
+
+**Via OVH API (for automation):**
+
+```bash
+# Get available plans
+PLANS=$(curl -s \
+  -H "X-Ovh-Application: $OVH_APP_KEY" \
+  -H "X-Ovh-Consumer: $OVH_CONSUMER_KEY" \
+  -H "X-Ovh-Timestamp: $(date +%s)" \
+  -H "X-Ovh-Signature: ..." \
+  "https://eu.api.ovh.com/v1/cloud/project/${OVH_PROJECT_ID}/capabilities/containerRegistry")
+
+# Or using the OVH Python SDK (used in install-ovh-mks.sh):
+python3 << 'PYEOF'
+import ovh, json
+client = ovh.Client(endpoint='ovh-eu')
+plans = client.get(f"/cloud/project/{OVH_PROJECT_ID}/capabilities/containerRegistry")
+for p in plans:
+    print(f"  {p['name']} (id: {p['id']}) — {p['registryLimits']['imageStorage']} storage")
+PYEOF
+
+# Create the registry
+python3 << 'PYEOF'
+import ovh, json
+client = ovh.Client(endpoint='ovh-eu')
+result = client.post(f"/cloud/project/{OVH_PROJECT_ID}/containerRegistry",
+    name="tes-mpr",
+    region="GRA9",
+    planID="<plan-id-from-above>"  # S plan ID
+)
+print(json.dumps(result, indent=2))
+# Save result['id'] and result['url']
+PYEOF
+```
+
+### Step 2: Generate Credentials
+
+**Via OVH Control Panel:**
+
+1. In **Managed Private Registry**, find your registry (`tes-mpr`)
+2. Click the **`...`** menu → **Generate identification details**
+3. Click **Confirm**
+4. **Save the username and password** — the password is shown only once!
+
+**Via OVH API:**
+
+```bash
+python3 << 'PYEOF'
+import ovh, json
+client = ovh.Client(endpoint='ovh-eu')
+creds = client.post(f"/cloud/project/{OVH_PROJECT_ID}/containerRegistry/{REGISTRY_ID}/users",
+    email="tes-admin@example.com",
+    login="tes-admin"
+)
+print(f"Username: {creds['user']}")
+print(f"Password: {creds['password']}")  # Save this!
+PYEOF
+```
+
+> The registry URL will be in the format: `xxxxxxxx.gra9.container-registry.ovh.net`
+
+### Step 3: Create a Harbor Project
+
+After creation, access the **Harbor UI** at your registry URL:
+
+1. Open `https://xxxxxxxx.gra9.container-registry.ovh.net` in your browser
+2. Log in with the credentials from Step 2
+3. Click **New Project**
+4. Name: your namespace (e.g., `cmgantwerpen` or `tes-images`)
+5. Access level: **Private**
+6. Click **OK**
+
+### Step 4: Configure nerdctl Registry Auth on Worker Nodes
+
+Since Funnel uses `nerdctl` to pull task images, you need registry auth at the containerd/nerdctl level. This is done via a DaemonSet that writes Docker config to each worker node:
+
+```bash
+# Create a Kubernetes Secret with Docker registry credentials
+kubectl create secret docker-registry regcred \
+  -n funnel \
+  --docker-server=xxxxxxxx.gra9.container-registry.ovh.net \
+  --docker-username=tes-admin \
+  --docker-password='<password-from-step-2>'
+
+# Extract the Docker config JSON for nerdctl
+DOCKER_CONFIG=$(kubectl get secret regcred -n funnel \
+  -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d)
+
+# Create a ConfigMap with the Docker config for mounting into worker pods
+kubectl create configmap -n funnel docker-registry-config \
+  --from-literal=config.json="${DOCKER_CONFIG}"
+```
+
+Then, in the Funnel worker pod template, mount this config so nerdctl can use it:
+
+```yaml
+# Add to worker pod volumes:
+- name: docker-config
+  configMap:
+    name: docker-registry-config
+
+# Add to worker container volumeMounts:
+- name: docker-config
+  mountPath: /root/.docker
+  readOnly: true
+```
+
+**Alternative: DaemonSet approach** (writes auth to each node's host filesystem):
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: registry-auth-setup
+  namespace: funnel
+spec:
+  selector:
+    matchLabels:
+      app: registry-auth
+  template:
+    spec:
+      initContainers:
+      - name: setup-auth
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - |
+          mkdir -p /host-docker-config/.docker
+          cat > /host-docker-config/.docker/config.json << 'EOF'
+          {"auths":{"xxxxxxxx.gra9.container-registry.ovh.net":{"auth":"<base64-user:pass>"}}}
+          EOF
+        volumeMounts:
+        - name: host-root
+          mountPath: /host-docker-config
+          subPath: root
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+```
+
+### Step 5: Push Images to Your Registry
+
+```bash
+# 1. Login to your OVH registry (from your local machine)
+docker login xxxxxxxx.gra9.container-registry.ovh.net \
+  -u tes-admin \
+  -p '<password>'
+
+# 2. Tag your image for the registry
+docker tag my-tool:v1.0 \
+  xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0
+
+# 3. Push
+docker push xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0
+```
+
+**Image naming convention:**
+
+```
+xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0
+└────────────────────────────────────┘ └────────────┘ └──────┘ └──┘
+           Registry URL                  Project       Image   Tag
+```
+
+### Step 6: Use Private Images in WDL Workflows
+
+```wdl
+task run_custom_analysis {
+  input {
+    File input_file
+  }
+
+  command {
+    echo "Running analysis with private image..."
+  }
+
+  runtime {
+    docker: "xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0"
+  }
+
+  output {
+    File result = stdout()
+  }
+}
+```
+
+### Verification
+
+```bash
+# 1. Check registry in OVHcloud Manager
+#    Status should show "OK"
+
+# 2. Verify K8s secret exists
+kubectl get secret regcred -n funnel
+
+# 3. Test docker login from your machine
+docker login xxxxxxxx.gra9.container-registry.ovh.net
+
+# 4. Verify Harbor UI access
+#    Open: https://xxxxxxxx.gra9.container-registry.ovh.net
+#    Should see your project and pushed images
+
+# 5. Test nerdctl pull from a worker node (via debug pod)
+kubectl run -n funnel nerdctl-test --rm -it \
+  --image=xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0 \
+  --overrides='{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}' \
+  --restart=Never \
+  -- echo "Image pulled successfully!"
+```
+
+### Important Notes
+
+⚠️ **nerdctl vs K8s image pulling**: Funnel uses nerdctl to pull task images on the host, not Kubernetes. K8s `imagePullSecrets` only affect the Funnel worker pod image itself, not the task container images.
+
+⚠️ **Registry URL is unique**: Each registry gets a random hash prefix (e.g., `8093ff7x.gra5.container-registry.ovh.net`). Store this in `env.variables`.
+
+⚠️ **Credentials are sensitive**: Never commit passwords to git. Use K8s Secrets or environment variables.
+
+⚠️ **Harbor projects**: Images must be pushed to an existing Harbor project. Create one before pushing.
+
+### 💰 Cost Impact
+
+| Plan | Monthly Cost | Storage | Notes |
+|------|-------------|---------|-------|
+| **S** | ~€5/month | 200 GB | Sufficient for most use cases |
+| **M** | ~€15/month | 200 GB | Includes Trivy vulnerability scanning |
+| **L** | ~€45/month | 5 TB | For large image collections |
+
+- Image pulls within OVH: **FREE** (no bandwidth charges)
+- Image pushes: Included in plan
+
+### ✅ Phase 4.5 Checklist
+
+- [ ] Registry "tes-mpr" created in GRA9 (visible in OVHcloud Manager, status: OK)
+- [ ] Harbor admin credentials generated and securely stored
+- [ ] Harbor project created (e.g., `cmgantwerpen`)
+- [ ] K8s Secret `regcred` created in `funnel` namespace
+- [ ] nerdctl registry auth configured on worker nodes (Docker config mounted)
+- [ ] Test image pushed to registry from local machine
+- [ ] Test image pulled successfully in a Funnel task
+- [ ] Registry URL stored in `env.variables` as `MPR_REGISTRY_URL`
 
 ---
 
