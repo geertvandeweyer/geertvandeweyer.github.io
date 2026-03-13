@@ -6,11 +6,15 @@ author: "Geert Van de Weyer"
 baseurl: ""  # User site (geertvandeweyer.github.io), no baseurl needed
 url: "https://geertvandeweyer.github.io"
 
-# Jekyll theme (Architect for wider layout)
-theme: jekyll-theme-architect
+# Jekyll theme (minimal, with custom override)
+# theme: jekyll-theme-architect
 
 # Markdown processor
 markdown: kramdown
+
+# Custom CSS
+sass:
+  style: compressed
 
 # Additional configurations
 plugins:

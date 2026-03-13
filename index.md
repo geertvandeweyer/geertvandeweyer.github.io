@@ -3,6 +3,8 @@ layout: default
 title: "Cromwell + TES on Kubernetes"
 description: "Platform-agnostic guide to deploying Cromwell and Task Execution Service on any cloud Kubernetes cluster"
 permalink: /
+extra_css:
+  - /assets/css/custom.css
 ---
 
 # Cromwell + TES on Kubernetes
