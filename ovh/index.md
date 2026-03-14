@@ -13,6 +13,52 @@ Deploy a complete genomic workflow platform on **OVHcloud MKS** with managed Kub
 
 ---
 
+
+## 🏗️ OVH Architecture at a glance
+
+```
+OVHcloud (GRA9 Region)
+┌──────────────────────────────────────────────────┐
+│ Neutron Networking                               │
+│ ├─ Public Network (external internet)            │
+│ └─ Private vRack (192.168.100.0/24)              │
+│    ├─ MKS Cluster nodes                          │
+│    ├─ Manila NFS share                           │
+│    └─ Inter-pod communication                    │
+└──────────────────────────────────────────────────┘
+         │
+         ├─ MKS Cluster (Kubernetes 1.31.13)
+         │  ├─ System Node (d2-4, always-on)
+         │  │  ├─ Karpenter Provider
+         │  │  └─ Funnel Server
+         │  └─ Worker Nodes (Karpenter-managed)
+         │     ├─ Funnel Disk Setup (DaemonSet)
+         │     └─ Task Pods (on demand)
+         │
+         ├─ Manila NFS (150 GB)
+         │  └─ Mounted on host, shared to all nodes
+         │
+         ├─ Cinder Volumes (per task)
+         │  └─ Auto-expanded, LUKS encrypted
+         │
+         └─ S3 Object Storage (GRA9)
+            └─ Task I/O, workflow inputs/outputs
+```
+
+**Key Technologies**
+
+| Technology | Role | Details |
+|-----------|------|---------|
+| **MKS** | Kubernetes cluster | Managed service, Free or Standard^1^ |
+| **Karpenter OVH** | Auto-scaling | Scales workers on demand |
+| **Manila NFS** | Shared storage | 150 GB, highly available |
+| **Cinder** | Task local storage | 100-500 GB volumes, auto-expanded |
+| **S3** | Object storage | Workflow I/O, persistent storage |
+| **LUKS** | Encryption | Keys managed by Barbican |
+
+^1^_: Free cluster has max 100 nodes and 1 AZ, Standardard is approximately 70€/month for max 500 nodes and 3AZ_
+
+
 ## 📖 Documentation
 
 ### [Installation Guide](/ovh/installation-guide/)
@@ -48,7 +94,7 @@ Deploy a complete genomic workflow platform on **OVHcloud MKS** with managed Kub
 - LUKS encryption issues
 
 ---
-
+<!-->
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -84,52 +130,6 @@ which helm                # Helm (optional, for Karpenter)
 
 **→ Start**: [Installation Guide](/ovh/installation-guide/)
 
----
-
-## 🏗️ OVH Architecture
-
-```
-OVHcloud (GRA9 Region)
-┌──────────────────────────────────────────────────┐
-│ Neutron Networking                               │
-│ ├─ Public Network (external internet)            │
-│ └─ Private vRack (192.168.100.0/24)              │
-│    ├─ MKS Cluster nodes                          │
-│    ├─ Manila NFS share                           │
-│    └─ Inter-pod communication                    │
-└──────────────────────────────────────────────────┘
-         │
-         ├─ MKS Cluster (Kubernetes 1.31.13)
-         │  ├─ System Node (d2-4, always-on)
-         │  │  ├─ Karpenter Provider
-         │  │  ├─ Funnel Server
-         │  │  └─ Cromwell Server
-         │  └─ Worker Nodes (Karpenter-managed)
-         │     ├─ Funnel Disk Setup (DaemonSet)
-         │     └─ Task Pods (on demand)
-         │
-         ├─ Manila NFS (150 GB)
-         │  └─ Mounted on host, shared to all nodes
-         │
-         ├─ Cinder Volumes (per task)
-         │  └─ Auto-expanded, LUKS encrypted
-         │
-         └─ S3 Object Storage (GRA9)
-            └─ Task I/O, workflow inputs/outputs
-```
-
----
-
-## 🔧 Key Technologies
-
-| Technology | Role | Details |
-|-----------|------|---------|
-| **MKS** | Kubernetes cluster | Managed service, ~€1/day |
-| **Karpenter OVH** | Auto-scaling | Scales workers on demand |
-| **Manila NFS** | Shared storage | 150 GB, highly available |
-| **Cinder** | Task local storage | 100-500 GB volumes, auto-expanded |
-| **S3** | Object storage | Workflow I/O, persistent storage |
-| **LUKS** | Encryption | Keys managed by Barbican |
 
 ---
 
@@ -169,17 +169,10 @@ Reference these guides for detailed component information:
 - **[Karpenter OVH Provider](/karpenter/cloud-providers/#ovh)** — OVH-specific scaling
 
 ---
+-->
 
-## 📚 Full Documentation
+## 📚 Installation overview
 
-### Quick References
-
-- **[Installation Guide](/ovh/installation-guide/)** — Step-by-step deployment
-- **[CLI Guide](/ovh/cli-guide/)** — OpenStack/OVHcloud commands
-- **[Cost & Infrastructure](/ovh/cost-and-infrastructure/)** — Budget planning
-- **[Troubleshooting](/ovh/troubleshooting/)** — Common issues
-
-### Step-by-Step Phases
 
 **[Phase 0: Environment Setup](/ovh/installation-guide/#phase-0)** (5 min)
 - OVH account verification
@@ -241,21 +234,11 @@ Reference these guides for detailed component information:
 
 ---
 
-## 💡 Next Steps
-
-1. **[Read Installation Guide](/ovh/installation-guide/)** — Understand phases 0-7
-2. **[Gather Prerequisites](/ovh/installation-guide/#prerequisites)** — API keys, tools
-3. **[Follow Phase 0](/ovh/installation-guide/#phase-0)** — Environment setup
-4. **[Execute Phases 1-7](/ovh/installation-guide/)** — Deploy step-by-step
-5. **[Run Smoke Tests](/ovh/installation-guide/#phase-7)** — Verify success
-6. **[Submit Workflows](/cromwell/workflows/)** — Start using the platform
-
----
 
 ## ✅ Production Checklist
 
 - [x] Installation verified (tested March 13, 2026)
-- [x] NFS mount propagation fixed (DaemonSet pattern)
+- [x] NFS mount propagation working (DaemonSet pattern)
 - [x] Karpenter auto-scaling working
 - [x] LUKS encryption enabled
 - [x] S3 access configured

@@ -9,10 +9,12 @@ extra_css:
 
 # Cromwell + TES on Kubernetes
 
-**A comprehensive platform for genomic workflow orchestration on any[^*] cloud**
+**A comprehensive platform for genomic workflow orchestration on any^*^ cloud**
 
 > Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service based on this, partially cloud agnostic, documentation.
 
+
+^*^_: This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS._
 ---
 
 ## 🎯 Project Goal
@@ -57,18 +59,18 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
     └────────────────────┘
 ```
 
-### 1. Cloud-Agnostic Core
+**1. Cloud-Agnostic Core**
 
 - **TES, Cromwell, Karpenter** work on any Kubernetes
 - Documentation tries to separate platform-agnostic from platform-specific
 
-### 2. Modular Components
+**2. Modular Components**
 
 - Swap storage (NFS ↔ S3 ↔ EFS)
 - Swap compute (OVH ↔ AWS (↔ GCP) )
 - Swap autoscaling (Karpenter ↔ Cloud-Managed)
 
-### 3. Storage Strategy (DaemonSet Pattern)
+**3. Storage Strategy (DaemonSet Pattern)**
 
 ```
 DaemonSet (on every node)
@@ -81,7 +83,7 @@ Task Pods
   └─ No unmounting on exit (DaemonSet owns lifecycle)
 ```
 
-### 4. Auto-scaling (Karpenter)
+**4. Auto-scaling (Karpenter)**
 
 Karpenter can be configured to select nodes from a preselected list of instance types
 
@@ -90,7 +92,7 @@ Monitor pod queue → Insufficient resources → Scale up nodes
                     Pods completed → Idle timeout → Scale down
 ```
 
-### 5. Cost Optimization
+**5. Cost Optimization**
 
 This deployment was built with routine genomics pipelines in mind. In this setting, data comes in spikes (sequencing machines finish), and are time critical. Therefore, we aimed for: 
 
@@ -235,4 +237,4 @@ Run Smoke Tests (5-10 min)
 **Version**: 2.0 (Multi-platform)  
 **Status**: ✅ Platform-agnostic core complete, OVH production-ready, AWS template available
 
-[^*]: This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS.
+
