@@ -383,11 +383,12 @@ alias kkarpen='kubectl config set-context --current --namespace=karpenter'
 
 ## Links
 
-- [Installation Guide](/installation-guide/) — Full 7-phase deployment
-- [Troubleshooting](/installation-guide/#troubleshooting) — Common issues
-- [Container Images](/container-images/) — Image management
-- [OVH CLI Guide](ovh-cli-guide.md) — Advanced CLI commands
-- [Cost & Infrastructure](cost-and-infra.md) — Budgeting & planning
+- [OVH Installation Guide](/ovh/installation-guide/) — Full 7-phase deployment
+- [AWS Installation Guide](/aws/installation-guide/) — Full 7-phase deployment
+- [TES Container Images](/tes/container-images/) — Image management (Funnel)
+- [Karpenter Guide](/karpenter/) — Auto-scaling with Karpenter
+- [OVH CLI Guide](/ovh/cli-guide/) — Advanced CLI commands
+- [OVH Cost & Infrastructure](/ovh/cost-and-infrastructure/) — Budgeting & planning
 
 ---
 

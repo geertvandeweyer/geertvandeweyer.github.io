@@ -22,6 +22,12 @@ Deploy a complete genomic workflow platform on **OVHcloud MKS** with managed Kub
 - Storage configuration (Manila NFS, Cinder volumes)
 - Time estimate: **~65 minutes**
 
+### [Karpenter OVH Quota Guide](/karpenter/ovh-quota/) ⭐ **Critical for Production**
+- How to prevent 412 InsufficientVCPUsQuota errors
+- Instance-type filtering strategy
+- Quota-aware NodePool configuration
+- Per-flavor vCPU/RAM caps
+
 ### [OVH CLI Guide](/ovh/cli-guide/)
 - OpenStack CLI commands
 - OVHcloud API tool usage

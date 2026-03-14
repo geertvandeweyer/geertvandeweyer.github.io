@@ -9,9 +9,9 @@ extra_css:
 
 # Cromwell + TES on Kubernetes
 
-**A comprehensive platform for genomic workflow orchestration on any cloud**
+**A comprehensive platform for genomic workflow orchestration on any[^*] cloud**
 
-> Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or any managed Kubernetes service with this modular, cloud-agnostic documentation.
+> Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service based on this, partially cloud agnostic, documentation.
 
 ---
 
@@ -20,9 +20,9 @@ extra_css:
 Run **high-throughput genomic workflows** (WDL/CWL) with:
 
 - **Cromwell**: Workflow language execution engine (WDL, CWL) — can run on-prem or in-cloud
-- **Funnel TES**: Task Execution Service (GA4GH standard) — runs in Kubernetes
+- **Funnel TES**: Task Execution Service (GA4GH standard) — runs in Kubernetes cluster
 - **Kubernetes**: Any managed or self-hosted cluster (OVH, AWS, GCP, etc.)
-- **Cloud Storage**: S3, NFS, or cloud-native options
+- **Cloud Storage**: S3, NFS, EFS, or other cloud-native options
 - **Auto-scaling**: Karpenter-managed worker pools
 
 ### Architecture
@@ -42,11 +42,11 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
     │  └──────────────────────────┘  │
     │  ┌──────────────────────────┐  │
     │  │ Task Pods (workers)      │  │
-    │  │ (auto-scaled on demand)  │  │
+    │  │ (auto-scaled (karpenter))│  │
     │  └──────────────────────────┘  │
     │  ┌──────────────────────────┐  │
     │  │ Storage                  │  │
-    │  │ (S3/NFS/Cloud storage)   │  │
+    │  │ (S3/NFS/EFS/...)         │  │
     │  └──────────────────────────┘  │
     └────────────────────────────────┘
              │
@@ -57,167 +57,23 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
     └────────────────────┘
 ```
 
----
-
-## 📚 Documentation Structure
-
-### Platform-Agnostic (Cloud-independent)
-
-**Learn the core components that work on any Kubernetes:**
-
-- **[TES (Funnel)](/tes/)** — Task Execution Service
-  - Architecture & design patterns
-  - Container images & builds
-  - Configuration & troubleshooting
-  - NFS mount strategies
-
-- **[Cromwell](/cromwell/)** — Workflow Orchestration Engine
-  - Configuration & backends
-  - Workflow submission & monitoring
-  - Integration with TES
-  - Troubleshooting
-
-- **[Karpenter](/karpenter/)** — Kubernetes Auto-scaling (Optional)
-  - Architecture & NodePools
-### Platform-Agnostic (Cloud-independent)
-
-**Learn the core components that work on any Kubernetes:**
-
-- **[TES (Funnel)](/tes/)** — Task Execution Service
-  - Architecture & design patterns
-  - Container images & builds
-  - Configuration & troubleshooting
-  - [Architecture deep-dive](/tes/architecture/)
-  - [Container images reference](/tes/container-images/)
-
-- **[Cromwell](/cromwell/)** — Workflow Orchestration Engine
-  - Configuration & backends
-  - Workflow submission & monitoring
-  - Integration with TES
-  - Troubleshooting
-
-- **[Karpenter](/karpenter/)** — Kubernetes Auto-scaling (Optional)
-  - Architecture & NodePools
-  - Configuration for cloud providers
-  - Troubleshooting scaling issues
-
-### Platform-Specific (Cloud-specific implementations)
-
-**Deploy to your chosen cloud:**
-
-- **[OVHcloud](/ovh/)** — OVH MKS + Manila NFS + S3
-  - [7-phase installation guide](/ovh/installation-guide/)
-  - OVH CLI commands & tools
-  - Cost & capacity planning
-  - Troubleshooting for OVH specifics
-
-- **[Amazon AWS](/aws/)** — EKS + EFS + S3
-  - Installation guide (coming soon)
-  - AWS CLI commands & tools
-  - IAM & security groups
-  - Troubleshooting for AWS specifics
-
----
-
-## 🚀 Quick Start
-
-### Choose Your Platform
-
-**Pick one:**
-
-| Platform | Status | Docs | Time |
-|----------|--------|------|------|
-| **OVHcloud** | ✅ Production-ready | [→ OVH Docs](/ovh/) | ~65 min |
-| **AWS** | 📋 Template available | [→ AWS Docs](/aws/) | ~90 min |
-| **GCP** | 🔄 Coming soon | — | TBD |
-| **Generic K8s** | ✅ Instructions included | [→ TES Docs](/tes/) | Variable |
-
-### Installation Timeline
-
-```
-Choose Platform (2 min)
-  ↓
-Create Kubernetes Cluster (15-20 min)
-  ↓
-Configure Storage (10-15 min)
-  ↓
-Deploy Funnel TES (10 min)
-  ↓
-Deploy Cromwell (5 min)
-  ↓
-Run Smoke Tests (5-10 min)
-  ↓
-✅ Ready for production workflows!
-```
-
----
-
-## 📖 How to Use This Documentation
-
-### I want to deploy on OVHcloud
-
-**Start here**: [OVHcloud Installation Guide](/ovh/installation-guide/)
-
-Then reference:
-- [TES Architecture](/tes/architecture/) — Understand the task execution layer
-- [Cromwell Configuration](/cromwell/configuration/) — Set up workflow engine
-- [Karpenter Configuration](/karpenter/configuration/) — Auto-scaling (optional)
-
-### I want to deploy on AWS
-
-**Start here**: [AWS Installation Guide](/aws/installation-guide/)
-
-Then reference:
-- [TES Architecture](/tes/architecture/) — Understand the task execution layer
-- [Cromwell Configuration](/cromwell/configuration/) — Set up workflow engine
-- [Karpenter Configuration](/karpenter/configuration/) — Auto-scaling (optional)
-
-### I want to understand TES (Funnel)
-
-**Start here**: [Funnel TES Overview](/tes/)
-
-Then dive into:
-- [Architecture](/tes/architecture/) — Design & patterns
-- [Container Images](/tes/container-images/) — Custom builds
-- [Configuration](/tes/configuration/) — Runtime options
-- [Troubleshooting](/tes/troubleshooting/) — Common issues
-
-### I want to understand Cromwell
-
-**Start here**: [Cromwell Overview](/cromwell/)
-
-Then dive into:
-- [Configuration](/cromwell/configuration/) — Backends & runtime settings
-- [Workflows](/cromwell/workflows/) — Submitting & monitoring
-- [Troubleshooting](/cromwell/troubleshooting/) — Common issues
-
-### I want quick command references
-
-**See**: [Quick Reference](/quick-reference/)
-
-kubectl, openstack, aws CLI commands, common tasks, troubleshooting.
-
----
-
-## 🏗️ Architecture Principles
-
 ### 1. Cloud-Agnostic Core
 
 - **TES, Cromwell, Karpenter** work on any Kubernetes
-- Documentation separates platform-agnostic from platform-specific
+- Documentation tries to separate platform-agnostic from platform-specific
 
 ### 2. Modular Components
 
 - Swap storage (NFS ↔ S3 ↔ EFS)
-- Swap compute (OVH ↔ AWS ↔ GCP)
-- Swap autoscaling (Karpenter ↔ KEDA ↔ Manual)
+- Swap compute (OVH ↔ AWS (↔ GCP) )
+- Swap autoscaling (Karpenter ↔ Cloud-Managed)
 
 ### 3. Storage Strategy (DaemonSet Pattern)
 
 ```
 DaemonSet (on every node)
   ├─ Mounts shared storage (NFS/EFS/S3)
-  └─ Keeps connection alive (prevents timeout)
+  └─ Keeps connection alive to prevent timeouts on node re-usage during consecutive tasks
 
 Task Pods
   ├─ Wait for mount to be ready
@@ -227,6 +83,8 @@ Task Pods
 
 ### 4. Auto-scaling (Karpenter)
 
+Karpenter can be configured to select nodes from a preselected list of instance types
+
 ```
 Monitor pod queue → Insufficient resources → Scale up nodes
                     Pods completed → Idle timeout → Scale down
@@ -234,60 +92,73 @@ Monitor pod queue → Insufficient resources → Scale up nodes
 
 ### 5. Cost Optimization
 
-- Nodes scale to zero when idle
-- On-demand pricing, spot instances where available
-- Storage tiers based on access patterns
+This deployment was built with routine genomics pipelines in mind. In this setting, data comes in spikes (sequencing machines finish), and are time critical. Therefore, we aimed for: 
+
+- Nodes scaling to (near) zero when idle
+- Use spot instances with robust retries where available
+- Prevent localization of static data where possible (reference data)
+- Provide access to wide ranges of instance types
 
 ---
 
-## 🔗 Key Links
+## 📖 How to Use This Documentation
 
-| Section | Link |
-|---------|------|
-| **OVHcloud Setup** | [/ovh/](/ovh/) |
-| **AWS Setup** | [/aws/](/aws/) |
-| **Funnel TES** | [/tes/](/tes/) |
-| **Cromwell** | [/cromwell/](/cromwell/) |
-| **Karpenter** | [/karpenter/](/karpenter/) |
-| **Quick Reference** | [/quick-reference/](/quick-reference/) |
+The documentation is organized as two main deployment examples : OVHcloud and AWS.  Next there are a couple of pages describing setups in more detail. 
 
----
+### I want to deploy on OVHcloud
 
-## 💡 Common Questions
+**Start here**: [OVHcloud Installation Guide](/ovh/installation-guide/)
 
-### Can I use this on a different cloud?
+Then reference:
+- [TES Architecture](/tes/) — Understand the task execution layer
+- [Cromwell Configuration](/cromwell/) — Set up workflow engine
+- [Karpenter Configuration](/karpenter/) — Auto-scaling (optional)
 
-**Yes!** The documentation is structured so you can:
-1. Follow [TES](/tes/), [Cromwell](/cromwell/), [Karpenter](/karpenter/) guides (cloud-agnostic)
-2. Adapt cloud-specific parts (storage, networking, IAM) for your cloud
+### I want to deploy on AWS
 
-### Can I use different storage backends?
+**Start here**: [AWS Installation Guide](/aws/installation-guide/)
 
-**Yes!** The storage layer is modular:
-- NFS (Manila, EFS, self-hosted)
-- S3 (any S3-compatible endpoint)
-- Cloud-native (EBS, Cinder, etc.)
+Then reference:
+- [TES Architecture](/tes/) — Understand the task execution layer
+- [Cromwell Configuration](/cromwell/) — Set up workflow engine
+- [Karpenter Configuration](/karpenter/) — Auto-scaling (optional)
 
-### Do I need Karpenter?
 
-**No**, it's optional:
-- For **on-demand auto-scaling**: Use Karpenter
-- For **manual scaling**: Use `kubectl scale`
-- For **CRON-based scaling**: Use KEDA or custom controllers
+### The Task Execution Layer : TES (Funnel)
 
-### What are the minimum requirements?
+**Start here**: [Funnel TES Overview](/tes/)
 
-- Kubernetes 1.20+ (tested on 1.31.13)
-- 2+ worker nodes (or 1 for testing)
-- 20+ GB storage (for containers & outputs)
-- S3 or NFS for shared data
+Then dive into:
+- [Architecture](/tes/architecture/) — Design & patterns
+- [Container Images](/tes/container-images/) — Custom builds
+- [Configuration](/tes/configuration/) — Runtime options
+- [Troubleshooting](/tes/troubleshooting/) — Common issues
 
-### Can I mix cloud providers?
+### The Workflow Execution Layer : Cromwell
 
-**Partially**: Storage might be provider-specific, but:
-- Run Cromwell on AWS EKS
-- Run workers on OVH MKS (federated)
-- Use S3 for data (accessible from both)
+**Start here**: [Cromwell Overview](/cromwell/)
+
+Then dive into:
+- [Configuration](/cromwell/configuration/) — Backends & runtime settings
+- [Workflows](/cromwell/workflows/) — Submitting & monitoring
+- [Troubleshooting](/cromwell/troubleshooting/) — Common issues
+
+### The Cluster Autoscaling Layer : Karpenter
+
+**Start here**: [Karpenter Overview](/karpenter/)
+
+Then dive into: 
+- [NodePools]()
+- [Alternatives]()
+
+
+
+### I need quick command references
+
+**See**: [Quick Reference](/quick-reference/)
+
+kubectl, openstack, aws CLI commands, common tasks, troubleshooting.
+
 
 ---
 
@@ -313,23 +184,15 @@ Monitor pod queue → Insufficient resources → Scale up nodes
 
 See platform-specific guides for detailed security setup.
 
----
-
-## 📈 Next Steps
-
-1. **Choose your cloud** ([OVH](/ovh/) or [AWS](/aws/))
-2. **Read the platform-specific installation guide**
-3. **Reference component documentation** as needed ([TES](/tes/), [Cromwell](/cromwell/), [Karpenter](/karpenter/))
-4. **Deploy and test** with smoke tests
-5. **Submit your first workflow!**
 
 ---
 
-## 📞 Support & Contributions
+## Support & Contributions
 
 - **Issues**: Document in GitHub Issues with `[TES]`, `[Cromwell]`, `[OVH]`, or `[AWS]` prefix
 - **Updates**: Submit PRs with documentation improvements
 - **Questions**: Check relevant section or file an issue
+- **Contact** : geert.vandeweyer@uza.be
 
 ---
 
@@ -343,6 +206,33 @@ See platform-specific guides for detailed security setup.
 
 ---
 
+
+
+### Installation Timeline
+
+```
+Choose Platform (2 min)
+  ↓
+Create Kubernetes Cluster (15-20 min)
+  ↓
+Configure Storage (10-15 min)
+  ↓
+Deploy Funnel TES (10 min)
+  ↓
+Deploy Cromwell (5 min)
+  ↓
+Run Smoke Tests (5-10 min)
+  ↓
+✅ Ready for production workflows!
+```
+
+
+
+---
+
+
 **Last Updated**: March 13, 2026  
 **Version**: 2.0 (Multi-platform)  
 **Status**: ✅ Platform-agnostic core complete, OVH production-ready, AWS template available
+
+[^*]: This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS.

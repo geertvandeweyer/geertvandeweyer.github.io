@@ -1,8 +1,8 @@
 # GitHub Pages Jekyll Configuration
 
-title: "Deployment & Infrastructure Documentation"
-description: "Complete guides for Cromwell, TES (Funnel), and Karpenter across cloud platforms"
-author: "Geert Van de Weyer"
+title: "Cromwell + TES on Kubernetes"
+description: "Guides to run Cromwell, TES (Funnel), and Karpenter across cloud platforms"
+author: "Geert Vandeweyer"
 baseurl: ""  # User site (geertvandeweyer.github.io), no baseurl needed
 url: "https://geertvandeweyer.github.io"
 

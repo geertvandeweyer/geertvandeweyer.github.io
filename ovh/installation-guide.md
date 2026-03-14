@@ -305,8 +305,9 @@ kubectl get pods -n kube-system | head -10
 This phase:
 
 1. Creates **Karpenter node autoscaler** (replaces OVH's simpler Cluster Autoscaler)
-2. Defines node pools for heterogeneous instance types (d2, b2, c3, r3, etc.)
-3. Configures consolidation (scales down when not needed)
+2. Restricts instance types to right-sized families (e.g., `c3` only) with per-flavor vCPU/RAM caps
+3. Sets NodePool resource limits based on OVH quota to prevent `412 InsufficientVCPUsQuota` errors
+4. Configures consolidation (scales down when not needed)
 
 ### Execution
 
@@ -317,7 +318,7 @@ The installer continues after Phase 1. **Expected output for Phase 2 & 2.5:**
  Phase 2: Create node pools
 ============================================
 
-Creating node pool 'workers' with flavors: d2,b2,b3,c2,c3,r2,r3...
+Creating node pool 'workers' with flavors: c3
 ✅ Node pool created
 
 ============================================
@@ -328,6 +329,7 @@ Installing Karpenter + OVHcloud provider...
 [Helm installing karpenter-ovhcloud...]
 deployment "karpenter" successfully rolled out
 ✅ Karpenter deployed (replicas: 2, high availability)
+✅ NodePool 'workers' configured: c3 family, vCPU limit 32
 ```
 
 ### Configuration Details
@@ -335,21 +337,30 @@ deployment "karpenter" successfully rolled out
 **Karpenter NodePool (`workers`):**
 
 ```yaml
+requirements:
+  - key: kubernetes.io/arch
+    operator: In
+    values: [amd64]
+  - key: node.kubernetes.io/instance-type
+    operator: In
+    values: [c3-4, c3-8, c3-16, c3-32]  # Only right-sized compute flavors
 limits:
-  cpu: 100 cores
-  memory: 400 Gi
+  cpu: "32"        # Reserve 2 vCPU for system node (34 - 2)
+  memory: "426Gi"  # Reserve 4 GB for system node (430 - 4)
 consolidateAfter: 5m      # Scale down idle nodes after 5 min
 consolidationPolicy: WhenEmpty  # Consolidate empty nodes
 ```
 
-**Instance types** (Karpenter picks the cheapest that fits):
+**Instance types** (Karpenter selects based on workload fit within limits):
 
-| Family | Flavor | vCPU | RAM | Type | $/hour | Use Case |
-|--------|--------|------|-----|------|--------|----------|
-| **d2** | d2-4 | 1 | 4 GB | Shared | €0.005 | Small tasks |
-| **b2** | b2-7 | 2 | 7 GB | AMD EPYC | €0.010 | Medium tasks |
-| **c3** | c3-4 | 2 | 8 GB | Intel Xeon | €0.020 | Parallel tasks |
-| **r3** | r3-8 | 4 | 32 GB | AMD EPYC | €0.050 | Memory-intensive |
+| Family | Flavor | vCPU | RAM | Type | Use Case |
+|--------|--------|------|-----|------|----------|
+| **c3** | c3-4 | 2 | 8 GB | Intel Xeon | Small batch tasks |
+| **c3** | c3-8 | 4 | 16 GB | Intel Xeon | Medium parallel tasks |
+| **c3** | c3-16 | 8 | 32 GB | Intel Xeon | Large parallel tasks |
+| **c3** | c3-32 | 16 | 64 GB | Intel Xeon | Memory-heavy tasks |
+
+> **Note:** Instance types are restricted to the `c3` (compute) family with per-flavor caps (`WORKER_MAX_VCPU=16`, `WORKER_MAX_RAM_GB=32`). This prevents Karpenter from selecting oversized GPU/HPC flavors that would exceed your OVH quota, causing `412 InsufficientVCPUsQuota` errors.
 
 ### Verification
 
@@ -365,16 +376,60 @@ kubectl logs -n karpenter -l app.kubernetes.io/name=karpenter | tail -20
 # Check for "Karpenter v0.32.x" message
 ```
 
+### ⚙️ Quota Management
+
+**Environment Variables** (in `env.variables`):
+
+```bash
+WORKER_FAMILIES="c3"           # Only compute family (not GPU/HPC/memory)
+OVH_VCPU_QUOTA="34"            # Total vCPU quota
+OVH_RAM_QUOTA_GB="430"         # Total RAM quota
+WORKER_MAX_VCPU="16"           # Per-flavor vCPU cap
+WORKER_MAX_RAM_GB="32"         # Per-flavor RAM cap
+```
+
+These variables:
+- **Filter flavors** at install time (excludes oversized instances)
+- **Set NodePool limits** to prevent over-provisioning
+- **Enable per-flavor caps** to avoid selecting resource-heavy outliers
+
+The installer script (`install-ovh-mks.sh`) and standalone update script (`update-nodepool-flavors.sh`) both use these variables to generate the NodePool dynamically.
+
+**Why?** OVH Karpenter bin-packs pending pods onto as few nodes as possible. Without instance-type filtering, it would select the largest flavor available (e.g., `a10-90` with 90 vCPU), leading to quota rejection. With filtering + limits, Karpenter respects your resource constraints.
+
 ### 💰 Cost Impact
 
 - **Karpenter overhead**: negligible (2 replicas, ~100 m CPU each)
 - **Worker nodes**: created on-demand, removed when idle
+- **c3 instance cost**: ~€0.020–€0.100/hour depending on size and region
 
 ### ✅ Phase 2 Checklist
 
 - [ ] Karpenter deployment shows Running
-- [ ] NodePool "workers" is Ready
+- [ ] NodePool "workers" is Ready and contains only c3 instance types
 - [ ] Karpenter logs show no errors
+- [ ] Verify NodePool limits match your OVH quota: `kubectl get nodepool workers -o yaml | grep -A2 limits`
+
+### 🔧 Updating Karpenter Configuration Post-Deployment
+
+If you need to change quota limits or flavors **after** initial deployment, use the standalone update script:
+
+```bash
+# Edit env.variables with new quota values
+vim ./env.variables
+
+# Regenerate and apply the NodePool
+./update-nodepool-flavors.sh ./env.variables
+
+# Karpenter will reconcile within ~30s
+kubectl get nodeclaim -w
+```
+
+This script:
+1. Fetches the latest available flavors from OVH API
+2. Filters based on `WORKER_FAMILIES` and per-flavor caps
+3. Generates a new NodePool YAML with updated limits
+4. Applies it to the cluster without redeploying Karpenter
 
 ---
 
@@ -1323,7 +1378,7 @@ These are published external images; we point to them but don't build them:
 
 ### Issue: Karpenter not scaling up nodes when tasks arrive
 
-**Cause**: Insufficient quota or node pool configuration issue.
+**Cause**: Insufficient quota, wrong instance-type filtering, or node pool configuration issue.
 
 **Diagnosis**:
 
@@ -1335,19 +1390,35 @@ kubectl describe nodeclaim <name>
 # Check Karpenter logs
 kubectl logs -n karpenter -l app.kubernetes.io/name=karpenter | tail -50
 
-# Check node pool limits
-kubectl get nodepool workers -o yaml | grep -A 10 "limits:"
+# Check node pool limits and instance-type requirement
+kubectl get nodepool workers -o yaml | grep -A 10 "limits:\|instance-type"
 
 # Check if pods are stuck in Pending
 kubectl get pods -n funnel
 ```
 
-**Solutions**:
+**Symptoms & Solutions**:
 
-- **Quota exceeded**: Increase project quota in OVH Manager (Compute → Quotas)
-- **Node pool limits hit**: Edit `KUBECONFIG=~/.kube/ovh-tes.yaml kubectl edit nodepool workers`
-  - Increase `.spec.limits.cpu` or `.spec.limits.memory`
-- **OVH API error**: Check Karpenter token (KARPENTER_APP_KEY, etc.) is valid
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| `InsufficientVCPUsQuota` (412) in NodeClaim status | Karpenter selecting oversized flavors (e.g., `a10-90` 90vCPU) that exceed your OVH quota | Verify `node.kubernetes.io/instance-type` requirement only lists c3 flavors; use `update-nodepool-flavors.sh` if needed |
+| NodeClaim stuck in `Unknown` for >5min | NodePool limits exceeded or incompatible instance types | Check `limits.cpu` and `limits.memory` match your OVH quota; update with `./update-nodepool-flavors.sh` |
+| `NoCompatibleInstanceTypes` event | Instance-type filtering removed all compatible flavors | Verify `WORKER_FAMILIES`, `WORKER_MAX_VCPU`, `WORKER_MAX_RAM_GB` are set correctly in `env.variables` |
+| Nodes provisioning but pods stay Pending | Node resource capacity exhausted | Increase `OVH_VCPU_QUOTA` or reduce task resource requests |
+
+**Common fix**:
+
+```bash
+# Re-run the flavor update script to regenerate NodePool with correct filtering
+cd ./OVH_installer/installer
+./update-nodepool-flavors.sh ./env.variables
+
+# Check the updated NodePool
+kubectl get nodepool workers -o yaml | grep -A 10 "instance-type"
+
+# Karpenter will reconcile within ~30s
+kubectl get nodeclaim -w
+```
 
 ### Issue: NFS mount failures during cluster startup
 
