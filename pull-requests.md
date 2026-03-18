@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Pull Requests
+permalink: /pull-requests/
 ---
 
 # Upstream Pull Requests
