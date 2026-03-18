@@ -68,6 +68,13 @@ OVHcloud (GRA9 Region)
 - Storage configuration (Manila NFS, Cinder volumes)
 - Time estimate: **~65 minutes**
 
+### [Karpenter Deployment](/ovh/karpenter-deployment/)
+- Current deployment status and configuration
+- Cluster and node setup details
+- NodePool disruption policy and consolidation
+- Volume cleanup and node labeling controllers
+- Testing and verification procedures
+
 ### [Karpenter OVH Quota Guide](/karpenter/ovh-quota/) ⭐ **Critical for Production**
 - How to prevent 412 InsufficientVCPUsQuota errors
 - Instance-type filtering strategy

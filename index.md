@@ -103,7 +103,18 @@ This deployment was built with routine genomics pipelines in mind. In this setti
 
 ---
 
-## 📖 How to Use This Documentation
+## � Development & Contributing
+
+### [Pending Pull Requests](/pull-requests/)
+
+Documentation of work-in-progress improvements to upstream repositories:
+- **karpenter-provider-ovhcloud**: Node labeling, drift detection, pool creation fixes
+- **funnel**: Kubernetes backend improvements (optional S3, ConfigMap templates, template rendering)
+- **cromwell**: S3 endpoint support, TES memory-retry, local filesystem support
+
+---
+
+## �📖 How to Use This Documentation
 
 The documentation is organized as two main deployment examples : OVHcloud and AWS.  Next there are a couple of pages describing setups in more detail. 
 
