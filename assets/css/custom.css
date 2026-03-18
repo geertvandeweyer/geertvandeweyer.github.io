@@ -91,6 +91,25 @@ header #a-title:hover {
   color: rgba(255,255,255,0.9);
 }
 
+/* Container layout — responsive max-width with padding */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 0 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .container {
+    padding: 0 8px;
+  }
+}
+
 /* Container layout with sidebar + content */
 #main_content {
   display: grid;
@@ -230,6 +249,7 @@ footer {
 @media (max-width: 768px) {
   #main_content {
     grid-template-columns: 1fr;
+    gap: 24px;
   }
 
   .sidebar {
@@ -242,6 +262,7 @@ footer {
 
   .site-nav {
     position: static;
+    margin-bottom: 32px;
   }
 
   h1 {
@@ -258,6 +279,99 @@ footer {
 
   header h1 {
     font-size: 1.6rem;
+  }
+
+  pre {
+    overflow-x: auto;
+    font-size: 13px;
+  }
+
+  table {
+    font-size: 14px;
+  }
+
+  table th, table td {
+    padding: 8px;
+  }
+}
+
+@media (max-width: 480px) {
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  h2 {
+    font-size: 1.25rem;
+  }
+
+  h3 {
+    font-size: 1.1rem;
+  }
+
+  header {
+    padding: 16px 0;
+    margin-bottom: 24px;
+  }
+
+  header h1 {
+    font-size: 1.3rem;
+  }
+
+  header h2 {
+    font-size: 0.95rem;
+  }
+
+  #main_content {
+    gap: 16px;
+  }
+
+  .site-nav {
+    padding: 16px;
+    margin-bottom: 24px;
+    font-size: 13px;
+  }
+
+  .site-nav h3 {
+    font-size: 1rem;
+    margin-bottom: 12px;
+  }
+
+  .site-nav h4 {
+    font-size: 0.85rem;
+  }
+
+  .site-nav ul ul {
+    margin-left: 12px;
+    padding-left: 8px;
+  }
+
+  footer {
+    padding: 24px 0;
+    margin-top: 40px;
+    font-size: 12px;
+  }
+
+  code {
+    font-size: 0.85em;
+  }
+
+  pre {
+    padding: 12px;
+    font-size: 12px;
+  }
+
+  blockquote {
+    padding: 8px 12px;
+    margin: 12px 0;
+  }
+
+  table {
+    font-size: 12px;
+    margin: 12px 0;
+  }
+
+  table th, table td {
+    padding: 6px;
   }
 }
 
