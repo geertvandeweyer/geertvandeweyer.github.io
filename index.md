@@ -13,18 +13,18 @@ extra_css:
 
 > Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service based on this, partially cloud agnostic, documentation.
 
-<small>* _This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS._</small>
+<small style="font-size: 0.85em;">*<em>This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS.</em></small>
 ---
 
 ## 🎯 Project Goal
 
 Run **high-throughput genomic workflows** (WDL/CWL) with:
 
-- **Cromwell**: Workflow language execution engine (WDL, CWL) — can run on-prem or in-cloud
-- **Funnel TES**: Task Execution Service (GA4GH standard) — runs in Kubernetes cluster
-- **Kubernetes**: Any managed or self-hosted cluster (OVH, AWS, GCP, etc.)
-- **Cloud Storage**: S3, NFS, EFS, or other cloud-native options
-- **Auto-scaling**: Karpenter-managed worker pools
+  - **Cromwell**: Workflow language execution engine (WDL, CWL) — can run on-prem or in-cloud
+  - **Funnel TES**: Task Execution Service (GA4GH standard) — runs in Kubernetes cluster
+  - **Kubernetes**: Any managed or self-hosted cluster (OVH, AWS, GCP, etc.)
+  - **Cloud Storage**: S3, NFS, EFS, or other cloud-native options
+  - **Auto-scaling**: Karpenter-managed worker pools
 
 ### Architecture
 
@@ -58,18 +58,20 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
     └────────────────────┘
 ```
 
-**1. Cloud-Agnostic Core**
+####1. Cloud-Agnostic Core
 
-- **TES, Cromwell, Karpenter** work on any Kubernetes
-- Documentation tries to separate platform-agnostic from platform-specific
+  - **TES, Cromwell, Karpenter** work on any Kubernetes
+  - Documentation tries to separate platform-agnostic from platform-specific
 
-**2. Modular Components**
 
-- Swap storage (NFS ↔ S3 ↔ EFS)
-- Swap compute (OVH ↔ AWS (↔ GCP) )
-- Swap autoscaling (Karpenter ↔ Cloud-Managed)
+####2. Modular Components
 
-**3. Storage Strategy (DaemonSet Pattern)**
+  - Swap storage (NFS ↔ S3 ↔ EFS)
+  - Swap compute (OVH ↔ AWS (↔ GCP))
+  - Swap autoscaling (Karpenter ↔ Cloud-Managed)
+
+
+####3. Storage Strategy (DaemonSet Pattern)
 
 ```
 DaemonSet (on every node)
@@ -82,7 +84,7 @@ Task Pods
   └─ No unmounting on exit (DaemonSet owns lifecycle)
 ```
 
-**4. Auto-scaling (Karpenter)**
+####4. Auto-scaling (Karpenter)
 
 Karpenter can be configured to select nodes from a preselected list of instance types
 
@@ -91,25 +93,33 @@ Monitor pod queue → Insufficient resources → Scale up nodes
                     Pods completed → Idle timeout → Scale down
 ```
 
-**5. Cost Optimization**
+
+####5. Cost Optimization
 
 This deployment was built with routine genomics pipelines in mind. In this setting, data comes in spikes (sequencing machines finish), and are time critical. Therefore, we aimed for: 
 
-- Nodes scaling to (near) zero when idle
-- Use spot instances with robust retries where available
-- Prevent localization of static data where possible (reference data)
-- Provide access to wide ranges of instance types
+  - Nodes scaling to (near) zero when idle
+  - Use spot instances with robust retries where available
+  - Prevent localization of static data where possible (reference data)
+  - Provide access to wide ranges of instance types
 
 ---
 
 ## � Development & Contributing
 
-### [Pending Pull Requests](/pull-requests/)
+### Development: [Pending Pull Requests](/pull-requests/)
 
 Documentation of work-in-progress improvements to upstream repositories:
 - **karpenter-provider-ovhcloud**: Node labeling, drift detection, pool creation fixes
 - **funnel**: Kubernetes backend improvements (optional S3, ConfigMap templates, template rendering)
 - **cromwell**: S3 endpoint support, TES memory-retry, local filesystem support
+
+### Contribute 
+- **Issues**: Document in GitHub Issues with `[TES]`, `[Cromwell]`, `[OVH]`, or `[AWS]` prefix
+- **Updates**: Submit PRs with documentation improvements
+- **Questions**: Check relevant section or file an issue
+- **Contact** : geert.vandeweyer@uza.be
+
 
 ---
 
@@ -199,14 +209,6 @@ See platform-specific guides for detailed security setup.
 
 ---
 
-## Support & Contributions
-
-- **Issues**: Document in GitHub Issues with `[TES]`, `[Cromwell]`, `[OVH]`, or `[AWS]` prefix
-- **Updates**: Submit PRs with documentation improvements
-- **Questions**: Check relevant section or file an issue
-- **Contact** : geert.vandeweyer@uza.be
-
----
 
 ## 📋 Helpful Resources
 
@@ -220,31 +222,8 @@ See platform-specific guides for detailed security setup.
 
 
 
-### Installation Timeline
+**Last Updated**: March 19, 2026  
+**Version**: 1.0 (Multi-platform)  
 
-```
-Choose Platform (2 min)
-  ↓
-Create Kubernetes Cluster (15-20 min)
-  ↓
-Configure Storage (10-15 min)
-  ↓
-Deploy Funnel TES (10 min)
-  ↓
-Deploy Cromwell (5 min)
-  ↓
-Run Smoke Tests (5-10 min)
-  ↓
-✅ Ready for production workflows!
-```
-
-
-
----
-
-
-**Last Updated**: March 13, 2026  
-**Version**: 2.0 (Multi-platform)  
-**Status**: ✅ Platform-agnostic core complete, OVH production-ready, AWS template available
 
 
