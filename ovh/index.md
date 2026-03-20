@@ -14,10 +14,10 @@ Deploy a complete genomic workflow platform on **OVHcloud MKS** with managed Kub
 ---
 
 
-## 🏗️ OVH Architecture at a glance
+## OVH Architecture at a glance
 
 ```
-OVHcloud (GRA9 Region)
+OVHcloud (GRA9 Region, 1AZ)
 ┌──────────────────────────────────────────────────┐
 │ Neutron Networking                               │
 │ ├─ Public Network (external internet)            │
@@ -49,17 +49,17 @@ OVHcloud (GRA9 Region)
 
 | Technology | Role | Details |
 |-----------|------|---------|
-| **MKS** | Kubernetes cluster | Managed service, Free or Standard^1^ |
+| **MKS** | Kubernetes cluster | Managed service, Free or Standard* |
 | **Karpenter OVH** | Auto-scaling | Scales workers on demand |
 | **Manila NFS** | Shared storage | 150 GB, highly available |
-| **Cinder** | Task local storage | 100-500 GB volumes, auto-expanded |
+| **Cinder** | Task local storage | 50+ GB volumes, auto-expanded |
 | **S3** | Object storage | Workflow I/O, persistent storage |
 | **LUKS** | Encryption | Keys managed by Barbican |
 
-^1^_: Free cluster has max 100 nodes and 1 AZ, Standardard is approximately 70€/month for max 500 nodes and 3AZ_
+* :_Free cluster has max 100 nodes and 1 AZ, Standardard is approximately 70€/month for max 500 nodes and 3AZ_
 
 
-## 📖 Documentation
+## Documentation
 
 ### [Installation Guide](/ovh/installation-guide/)
 - 7-phase deployment walkthrough
@@ -101,84 +101,9 @@ OVHcloud (GRA9 Region)
 - LUKS encryption issues
 
 ---
-<!-->
-## 🚀 Quick Start
-
-### Prerequisites
-
-```bash
-# OVHcloud account with API credentials
-export OVH_REGION="GRA9"
-export OVH_APPLICATION_KEY="<your-key>"
-export OVH_APPLICATION_SECRET="<your-secret>"
-export OVH_CONSUMER_KEY="<your-consumer-key>"
-
-# Tools installed
-which openstack           # OpenStack CLI
-which aws                 # AWS CLI (for S3)
-which kubectl             # Kubernetes CLI
-which helm                # Helm (optional, for Karpenter)
-```
-
-### 7-Phase Deployment
-
-```bash
-# Phase 0: Environment (5 min)
-# Phase 1: Create MKS cluster (15 min)
-# Phase 2: Configure node pools (10 min)
-# Phase 3: Set up Manila NFS (10 min)
-# Phase 4: Create S3 bucket (5 min)
-# Phase 5: Deploy Funnel (10 min)
-# Phase 6: Deploy Cromwell (5 min)
-# Phase 7: Run tests (5 min)
-```
-
-**Total**: ~65 minutes for a complete deployment
-
-**→ Start**: [Installation Guide](/ovh/installation-guide/)
 
 
----
-
-## 📊 Infrastructure Details
-
-### Cluster Specification
-
-| Component | Value |
-|-----------|-------|
-| **Region** | GRA9 (Gravelines, France) |
-| **Kubernetes Version** | 1.31.13 |
-| **System Node** | d2-4 (1 shared vCPU, 4GB RAM, always-on) |
-| **Worker Nodes** | c3-4, c3-8, r3-8 (auto-scaled, 0 at rest) |
-| **Network** | Private vRack (192.168.100.0/24) |
-| **Storage** | Manila NFS (150 GB) + Cinder volumes |
-
-### Estimated Monthly Cost
-
-```
-System Node (d2-4):     ~€0.30/day   (€9/month)
-Workers (auto-scale):   ~€0.10-0.50/day (usage-based)
-Manila NFS (150GB):     ~€7.50/month
-S3 Storage (100GB):     ~€2.50/month
-━━━━━━━━━━━━━━━━━━━━━━
-Total:                  ~€20-40/month (depending on usage)
-```
-
----
-
-## 🔗 Platform-Agnostic Sections
-
-Reference these guides for detailed component information:
-
-- **[Funnel TES](/tes/)** — Task execution (OVH-independent)
-- **[Cromwell](/cromwell/)** — Workflow orchestration (OVH-independent)
-- **[Karpenter](/karpenter/)** — Auto-scaling (OVH-independent)
-- **[Karpenter OVH Provider](/karpenter/cloud-providers/#ovh)** — OVH-specific scaling
-
----
--->
-
-## 📚 Installation overview
+## Installation overview
 
 
 **[Phase 0: Environment Setup](/ovh/installation-guide/#phase-0)** (5 min)
@@ -223,7 +148,7 @@ Reference these guides for detailed component information:
 
 ---
 
-## 🆘 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -242,7 +167,7 @@ Reference these guides for detailed component information:
 ---
 
 
-## ✅ Production Checklist
+## Production Checklist
 
 - [x] Installation verified (tested March 13, 2026)
 - [x] NFS mount propagation working (DaemonSet pattern)
@@ -256,6 +181,6 @@ Reference these guides for detailed component information:
 ---
 
 **Status**: ✅ **Production-Ready**  
-**Last Updated**: March 13, 2026  
+**Last Updated**: March 19, 2026  
 **Version**: 2.0 (Multi-platform)  
 **Tested On**: OVHcloud MKS 1.31.13, GRA9 region

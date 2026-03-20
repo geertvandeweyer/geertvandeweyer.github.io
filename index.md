@@ -13,7 +13,7 @@ extra_css:
 
 > Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service based on this, partially cloud agnostic, documentation.
 
-<small style="font-size: 0.85em;">*<em>This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS.</em></small>
+<span style="font-size: 0.85rem;">* This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS.</span>
 ---
 
 ## 🎯 Project Goal

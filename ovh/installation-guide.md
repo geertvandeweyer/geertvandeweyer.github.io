@@ -7,11 +7,6 @@ permalink: /ovh/installation-guide/
 
 # OVHcloud MKS + Cromwell + Funnel Installation Guide
 
-**Project:** CMG TES/UZA on OVHcloud MKS  
-**Region:** GRA9 (Gravelines, France)  
-**Last Updated:** March 12, 2026  
-**Status:** Complete, tested end-to-end with NFS keepalive
-
 ---
 
 ## Table of Contents
@@ -38,7 +33,7 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 
 - **Kubernetes Cluster**: 1 fixed system node (always-on, kube-system + app infrastructure) + autoscaled worker nodes
 - **Funnel**: Task Execution Service (TES) for running containerized tasks (via nerdctl)
-- **Cromwell**: Workflow Manager (WDL language support)
+- **Cromwell**: Workflow Manager (WDL language support, can run on-prem)
 - **Storage**: 
   - **Manila NFS** (150 GB ReadWriteMany) for shared workflow data
   - **S3 Object Storage** (OVH-compatible) for task inputs/outputs/logs
@@ -50,8 +45,10 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 
 ```
                           ┌─────────────────────────────┐
-                          │   Cromwell (localhost:7900) │
-                          │   (submits WDL workflows)   │
+                          │   Cromwell (localhost:7900) |
+                          │      depoloyed on-prem      |
+                          │   (submits WDL workflows)   |
+                          │                             |
                           └──────────────┬──────────────┘
                                          │ HTTP/REST
                           ┌──────────────▼──────────────┐
@@ -59,19 +56,21 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
                           │   (executes tasks)          │
                           └──────────────┬──────────────┘
                                          │
-          ┌──────────────────────────────┼──────────────────────────────┐
-          │                              │                              │
-    ┌─────▼──────┐   ┌──────────────┐   ▼   ┌──────────────┐     ┌─────▼──────────┐
-    │ system-    │   │ karpenter-   │       │ karpenter-   │  ...│ karpenter-     │
+          ┌──────────────────────────────┼
+          │                              │                              
+          |                 ┌────────────┘─────────┬────────────────────┐ 
+    ┌─────▼──────┐   ┌──────▼───────┐       ┌──────▼───────┐     ┌──────▼─────────┐
+    │ system-    │   │ karpenter-   │       │ karpenter-   │ ... │ karpenter-     │
     │ node       │   │ c3-4-node-1  │       │ c3-4-node-2  │     │ r3-8-node-1    │
     │ (d2-4)     │   │ (c3-4/8GB)   │       │ (c3-4/8GB)   │     │ (r3-8/32GB)    │
-    └─────┬──────┘   └──────┬───────┘       └──────┬───────┘     └─────┬──────────┘
-          │                 │                      │                    │
-          │                 │        ┌──────────────┼────────────────────┘
-          │                 │        │              │
-          └─────────────────┼────────┼──────────────┘
-                            │        │
-              ┌─────────────▼────────▼───────────────┐
+    └─────┬──────┘   └──────────────┘       └──────┬───────┘     └─────┬──────────┘
+          │                                        │                   │
+          │      (funnel-disk-setup expands        |                   |
+          |       /var/funnel-work on demand)      │                   │
+          │                                        │                   │
+          └──────────────────────────┬─────────────┘───────────────────┘
+                                     │
+              ┌──────────────────────▼───────────────┐
               │  Manila NFS (/mnt/shared, 150GB)     │
               │  OVH Cloud (private Neutron vRack)   │
               └──────────────────────────────────────┘
@@ -91,7 +90,7 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 | Component | Role | Host | Port |
 |-----------|------|------|------|
 | **Cromwell** | WDL workflow submission & orchestration | localhost (your machine) | 7900 |
-| **Funnel Server** | TES API, task queue management | MKS LoadBalancer | 8000 (HTTP), 9090 (gRPC) |
+| **Funnel Server** | TES API, task queue management | MKS cluster (LoadBalancer) | 8000 (HTTP), 9090 (gRPC) |
 | **Funnel Worker (nerdctl)** | Task container executor | Each worker node | (bound to node) |
 | **funnel-disk-setup** | Cinder volume mount + auto-expansion | Each worker node | N/A |
 | **Karpenter** | Node autoscaler | MKS cluster | (internal) |
@@ -104,58 +103,179 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 
 ### Local Machine Requirements
 
-1. **Micromamba or Conda** with an `ovh` environment containing:
+1. **Micromamba or Conda** with an `ovh` environment:
+
+   Recommended to keep all config settings & aliases localized. python3 is added for some utility scripts.
+
    ```bash
    # Create environment (one-time)
    micromamba create -n ovh
    micromamba activate ovh
    micromamba install \
-     ovhcloud \
-     openstack-clients \
-     kubernetes \
-     helm \
-     gettext  # for envsubst
+     -c conda-forge \
+     -c defaults \
+     python=3 
    ```
 
-2. **OVHcloud CLI credentials** (one-time setup):
+   Keep this env active during the install procedure ! 
+
+2. **helm** : package manager for kubernetes
+
    ```bash
-   ovhcloud account login
-   # Saves credentials to ~/.config/ovhcloud/config.toml
+   BIN_DIR=$(dirname $(which python3))
+   mkdir -p helm_release
+   cd helm_release
+   # pick version: 
+   wget https://get.helm.sh/helm-v4.1.1-linux-amd64.tar.gz
+   tar -zxvf helm-v4.1.1-linux-amd64.tar.gz
+   mv linux-amd64/helm "$BIN_DIR"
+   cd ..
    ```
 
-3. **OpenStack RC file** (downloaded from OVH Control Panel):
+3. **OVHcloud CLI** : interact with OVHcloud
+
+   First, install the client : 
+
+   ```bash
+   BIN_DIR=$(dirname $(which python3))
+   mkdir -p ovhcli_release
+   cd ovhcli_release
+   # pick version: 
+   wget https://github.com/ovh/ovhcloud-cli/releases/download/v0.10.0/ovhcloud-cli_Linux_x86_64.tar.gz
+   tar -zxvf ovhcloud-cli_Linux_x86_64.tar.gz
+   mv ovhcloud "$BIN_DIR"
+   cd ..
+   ```
+
+   Then, login to [ovh manager](https://www.ovh.com/manager/). Once logged in, create local credentials using : 
+
+   ```bash
+   ovhcloud login
+   # Saves credentials to ~/.ovh.conf
+   ```
+
+   When asked top open the webpage, fill in your details to generate api keys:
+
+   ![OVH credentials creation](../../images/ovh_credentials_creation.png)
+
+4. **kubectl** : interact with kubernete clusters
+
+   ```bash
+   BIN_DIR=$(dirname $(which python3))
+   mkdir -p kubectl_release
+   cd kubectl_release
+   # latest version: 
+   curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+   chmod +x kubectl
+   mv kubectl "$BIN_DIR"
+   cd ..
+   ```
+
+<!-- (generated during install ? )
+6. **OpenStack RC file** (downloaded from OVH Control Panel):
    - Visit: https://www.ovh.com/manager/cloud/project/iam/users
    - Download OpenStack RC file for your region
    - Save as: `OVH_installer/installer/openrc-tes-pilot.sh`
    - Source it: `source openrc-tes-pilot.sh`
 
-4. **AWS CLI** (for S3 operations):
+-->
+
+6. **AWS CLI** : for S3 operations:
+   
+   OVHcloud is compatible with S3, so we can use the aws cli to interact with object storage. First, install the client: 
+
    ```bash
-   micromamba install awscli-v2
-   # Configure: see Phase 4 (S3 setup)
+   BIN_DIR=$(dirname $(which python3))
+   mkdir -p awscli_release
+   cd awscli_release
+   # latest version:
+   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+   unzip awscliv2.zip
+   ./aws/install --bin-dir "$BIN_DIR" --install-dir "$BIN_DIR/../"
    ```
 
-5. **Docker** (for building custom container images):
+   Setup of the credentials will happen later. 
+
+7. **openstack** :
+
+   Install the client: 
+
    ```bash
-   # Already installed on Linux
-   # Ensure you have push access to your registry (e.g., docker.io/cmgantwerpen/...)
+   pip install python-openstackclient
    ```
+
+   Get the credentials (see point 8)
+
+8. **Create User** : OVH user with sufficients right to handle the deployment:
+
+  Go to : OVHcloud Manager : Public Cloud : Users & Roles
+  
+  Create a user with at least these permissions : 
+
+  | Permission | Needed for | 
+  |------------|------------|
+  | Share Operator | NFS access |
+  | Volume Operator | Block device handling |
+  | Network Operator | VPC access | 
+  | Compute Operator | Karpenter scaling |
+  | KeyManager Operator | LUKS encryption |
+  | Administrator | LUKS encryption * |
+
+  Keep the password at hand, you need to provide it in the command below ! 
+  
+  Click the three dots, and select "Download Openstack configuration file". Select your deployment region (eg GRA9) and download the file. Next, convert it to yaml:
+
+  ```bash
+  mkdir -p ~/.config/openstack
+  
+  # Source the RC file once (it will prompt for password)
+  source ~/openrc-tes-pilot.sh
+  
+  # Generate clouds.yaml from the sourced env vars
+  cat > ~/.config/openstack/clouds.yaml << EOF
+  clouds:
+    ovh-gra9:
+      auth:
+        auth_url: ${OS_AUTH_URL}
+        username: ${OS_USERNAME}
+        password: ${OS_PASSWORD}
+        project_id: ${OS_TENANT_ID}
+        user_domain_name: Default
+        project_domain_name: Default
+      region_name: ${OS_REGION_NAME}
+      interface: public
+      identity_api_version: 3
+  EOF
+  
+  chmod 600 ~/.config/openstack/clouds.yaml
+  ```
+
+
+
+* _Note : the admin was added to make handling of encrypted block devices work. I suppose it should be possible to lower the rights, but haven't figured out how yet. Let me know if you do :-)_
+
+
+  
+
 
 ### OVHcloud Project Requirements
 
 - **Project created** and activated in OVHcloud Manager
-- **Project ID** noted (visible in: Manager → Cloud → Project → Settings)
+- **Project ID** noted (visible in beta-navigation as :  Manager → Public Cloud : Top left)
+
+<!--
 - **At least one API user** with sufficient permissions:
   - Cloud > Kubernetes
   - Cloud > Network
   - Cloud > Storage
   - Cloud > Identity & Access Management (S3, Barbican)
+--> 
 
 ### Quotas & Capacity
 
 Before starting, ensure your OVHcloud project has sufficient quota:
 
-| Resource | Recommendation | Notes |
+| Resource | Minimal | Notes |
 |----------|-----------------|-------|
 | **Compute (vCPU cores)** | 100+ | For Karpenter autoscaling |
 | **RAM (GB)** | 300+ | Depends on workflow demands |
@@ -170,7 +290,7 @@ Before starting, ensure your OVHcloud project has sufficient quota:
 
 ## Phase 0: Environment Setup
 
-### Step 0.1: Clone the Repository
+### Step 0.1: Download Installer script
 
 ```bash
 cd /path/to/workspace
@@ -180,27 +300,9 @@ cd k8s-ovh/OVH_installer/installer
 
 ### Step 0.2: Configure Environment Variables
 
-Edit `env.variables` with your OVHcloud project details:
+Edit `env.variables`. In the top half ("MANDATORY VARIABLES"), review and complete all required settings.
 
-```bash
-# Replace these with your actual values:
-OVH_PROJECT_ID="<your-project-id>"           # e.g., c386d174c0974008bac7b36c4dfafb23
-K8S_CLUSTER_NAME="tes-pilot"                 # MKS cluster name
-K8S_VERSION="1.31"                           # Kubernetes version
-EXTERNAL_IP="<your-floating-ip>"             # For Cromwell access
-```
 
-**Key variables explained:**
-
-| Variable | Purpose | Example |
-|----------|---------|---------|
-| `OVH_REGION` | OVH region for all resources | GRA9 (Gravelines) |
-| `SYSTEM_FLAVOR` | Fixed node (kube-system) | d2-4 (1 vCPU, 4 GB) |
-| `WORKER_FAMILIES` | Instance types for workers | d2,b2,b3,c2,c3,r2,r3 |
-| `FUNNEL_IMAGE` | Funnel TES docker image | docker.io/cmgantwerpen/funnel:... |
-| `NFS_MOUNT_PATH` | Where to mount Manila NFS | /mnt/shared |
-| `WORK_DIR_INITIAL_GB` | Initial Cinder volume per node | 100 GB |
-| `CINDER_VOLUME_TYPE` | Encryption type | high-speed-luks |
 
 ### Step 0.3: Source OpenStack Credentials
 
@@ -1624,5 +1726,6 @@ curl -X POST http://localhost:7900/api/workflows/v1/<WF_ID>/abort
 
 **Document Version**: 1.0  
 **Last Updated**: March 12, 2026  
-**Next Review**: June 12, 2026 (quarterly)  
-**Maintainer**: CMG UZA Team
+**Maintainer**: geert.vandeweyer@uza.be
+**Region:** GRA9 (Gravelines, France)  
+**Status:** Complete, tested end-to-end with NFS keepalive

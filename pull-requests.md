@@ -12,7 +12,7 @@ This page documents pending pull requests to upstream repositories with function
 
 ## 1. karpenter-provider-ovhcloud
 
-**Status**: PR submitted : [PR #1](https://github.com/antonin-a/karpenter-provider-ovhcloud/pull/1)
+**Status**: PR submitted : [PR #1](https://github.com/antonin-a/karpenter-provider-ovhcloud/pull/1)  
 **Branch**: `main` (4 commits)  
 **Target**: `antonin-a/karpenter-provider-ovhcloud:main`
 
@@ -48,7 +48,7 @@ Introduces Karpenter label patching controller and fixes for drift detection, po
 
 ## 2. funnel
 
-**Status**: PR submitted. [See PR # 1357](https://github.com/ohsu-comp-bio/funnel/pull/1357/)  
+**Status**: PR submitted. [PR #1357](https://github.com/ohsu-comp-bio/funnel/pull/1357/)  
 **Branch**: `feat/k8s-ovh-improvements` (branched from `develop`)  
 **Target**: `ohsu-comp-bio/funnel:develop`
 
@@ -108,7 +108,7 @@ Infrastructure, database, server, worker, and Kubernetes backend enhancements.
 
 ## 3. cromwell
 
-**Status**: PR submitted. [See PR # 7858](https://github.com/broadinstitute/cromwell/pull/7858)  
+**Status**: PR submitted. [PR #7858](https://github.com/broadinstitute/cromwell/pull/7858)  
 **Branch**: `ovh-tes-improvements` (branched from working commit)  
 **Target**: `broadinstitute/cromwell:develop` (or feature branch)
 

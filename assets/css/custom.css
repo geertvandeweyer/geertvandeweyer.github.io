@@ -197,6 +197,22 @@ header #a-title:hover {
   text-decoration: underline;
 }
 
+/* Main content lists: explicit indentation so nested lists render with expected margin */
+.main-content ul,
+.main-content ol {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+  list-style-position: outside;
+}
+
+.main-content ul ul,
+.main-content ul ol,
+.main-content ol ul,
+.main-content ol ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+
 /* Code blocks */
 code {
   background: #f6f8fa;
