@@ -221,34 +221,44 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
   | KeyManager Operator | LUKS encryption |
   | Administrator | LUKS encryption * |
 
-  Keep the password at hand, you need to provide it in the command below ! 
-  
+  Click the three dots, and select "Generate a password"  
+    ⭐ Keep this password at hand, you need to provide it in the command below ! 
+
   Click the three dots, and select "Download Openstack configuration file". Select your deployment region (eg GRA9) and download the file. Next, convert it to yaml:
+  
+  **NOTE:** Make sure to update ovh-gra9 to the correct region if relevant!
 
   ```bash
-  mkdir -p ~/.config/openstack
-  
-  # Source the RC file once (it will prompt for password)
-  source ~/openrc-tes-pilot.sh
-  
-  # Generate clouds.yaml from the sourced env vars
-  cat > ~/.config/openstack/clouds.yaml << EOF
-  clouds:
-    ovh-gra9:
-      auth:
-        auth_url: ${OS_AUTH_URL}
-        username: ${OS_USERNAME}
-        password: ${OS_PASSWORD}
-        project_id: ${OS_TENANT_ID}
-        user_domain_name: Default
-        project_domain_name: Default
-      region_name: ${OS_REGION_NAME}
-      interface: public
-      identity_api_version: 3
-  EOF
-  
-  chmod 600 ~/.config/openstack/clouds.yaml
+mkdir -p ~/.config/openstack
+
+# Source the RC file once (it will prompt for password)
+source ~/openrc-tes-pilot.sh
+
+# Generate clouds.yaml from the sourced env vars
+cat > ~/.config/openstack/clouds.yaml << EOF
+clouds:
+  ovh-gra9:
+    auth:
+      auth_url: ${OS_AUTH_URL}
+      username: ${OS_USERNAME}
+      password: ${OS_PASSWORD}
+      project_id: ${OS_TENANT_ID}
+      user_domain_name: Default
+      project_domain_name: Default
+    region_name: ${OS_REGION_NAME}
+    interface: public
+    identity_api_version: 3
+EOF
+
+chmod 600 ~/.config/openstack/clouds.yaml
   ```
+
+  Validate: 
+
+  ```bash
+  # match your config region above
+  export OS_CLOUD=ovh-gra9
+  openstack server list --limit 1
 
 
 
