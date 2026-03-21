@@ -99,13 +99,11 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 
 ---
 
-## Prerequisites
+## (P)rerequisites
 
-### Local Machine Requirements
+### P.1 Micromamba / Conda
 
-1. **Micromamba or Conda** with an `ovh` environment:
-
-   Recommended to keep all config settings & aliases localized. python3 is added for some utility scripts.
+Install **Micromamba or Conda** with an `ovh` environment. This is recommended to keep all config settings & aliases localized. python3 is added for some utility scripts.
 
    ```bash
 # Create environment (one-time)
@@ -117,9 +115,11 @@ micromamba install \
   python=3 
    ```
 
-   Keep this env active during the install procedure ! 
+⭐ Keep this env active during the install procedure ! 
 
-2. **helm** : package manager for kubernetes
+### P.2 helm package manager
+
+Helm is the kubernetes package manager. We install the latest version as a standalone binary into the conda env. 
 
    ```bash
 BIN_DIR=$(dirname $(which python3))
@@ -132,9 +132,9 @@ mv linux-amd64/helm "$BIN_DIR"
 cd ..
    ```
 
-3. **OVHcloud CLI** : interact with OVHcloud
+### P.3 OVHcloud CLI
 
-   First, install the client : 
+The ovhcloud ccli is required to interact with ovhcloud, similar to aws-cli for amazon.  Again, we install the client as a standalone binary in the conda env:  
 
    ```bash
 BIN_DIR=$(dirname $(which python3))
@@ -147,18 +147,21 @@ mv ovhcloud "$BIN_DIR"
 cd ..
    ```
 
-   Then, login to [ovh manager](https://www.ovh.com/manager/). Once logged in, create local credentials using : 
+Then, login to [ovh manager](https://www.ovh.com/manager/). Once logged in, create local credentials using : 
 
    ```bash
-   ovhcloud login
-   # Saves credentials to ~/.ovh.conf
+ovhcloud login
+# Saves credentials to ~/.ovh.conf
    ```
 
-   When asked top open the webpage, fill in your details to generate api keys:
+When asked top open the webpage, fill in your details to generate api keys:
 
-   ![OVH credentials creation](../../images/ovh_credentials_creation.png)
+![OVH credentials creation](../../images/ovh_credentials_creation.png)
 
-4. **kubectl** : interact with kubernete clusters
+
+### P.4 kubectl
+
+Kubectl is the client to interact with the kubernetes cluster.  We install it as a standalone binary into the conda env: 
 
    ```bash
 BIN_DIR=$(dirname $(which python3))
@@ -171,18 +174,12 @@ mv kubectl "$BIN_DIR"
 cd ..
    ```
 
-<!-- (generated during install ? )
-6. **OpenStack RC file** (downloaded from OVH Control Panel):
-   - Visit: https://www.ovh.com/manager/cloud/project/iam/users
-   - Download OpenStack RC file for your region
-   - Save as: `OVH_installer/installer/openrc-tes-pilot.sh`
-   - Source it: `source openrc-tes-pilot.sh`
 
--->
+### P.5 AWS CLI 
 
-6. **AWS CLI** : for S3 operations:
-   
-   OVHcloud is compatible with S3, so we can use the aws cli to interact with object storage. First, install the client: 
+The AWS CLI is installed to interact with S3-objects within the OVHcloud.  Their object storage is fully s3-compatibly, so they suggest to use the aws-cli using custom endpoints. 
+
+We install the client into the conda env: 
 
    ```bash
 BIN_DIR=$(dirname $(which python3))
@@ -194,23 +191,24 @@ unzip awscliv2.zip
 ./aws/install --bin-dir "$BIN_DIR" --install-dir "$BIN_DIR/../"
    ```
 
-   Setup of the credentials will happen later. 
+Setup of the credentials will happen later. 
 
-7. **openstack** :
+### P.6 openstack
 
-   Install the client: 
+The openstack client is installed into the conda env, and used to interact with some components of OVHcloud:
 
    ```bash
 pip install python-openstackclient
    ```
 
-   Get the credentials (see point 8)
+Get the credentials (see point 8)
 
-8. **Create User** : OVH user with sufficients right to handle the deployment:
+### P.7 Create User
 
-  Go to : OVHcloud Manager : Public Cloud : Users & Roles
-  
-  Create a user with at least these permissions : 
+An OVH user must be created with sufficients rights to handle the deployment: 
+
+  - Go to : OVHcloud Manager : Public Cloud : Users & Roles
+  - Create a user with at least these permissions : 
 
   | Permission | Needed for | 
   |------------|------------|
@@ -221,10 +219,10 @@ pip install python-openstackclient
   | KeyManager Operator | LUKS encryption |
   | Administrator | LUKS encryption * |
 
-  Click the three dots, and select "Generate a password"  
+  - Click the three dots, and select "Generate a password"  
     ⭐ Keep this password at hand, you need to provide it in the command below ! 
 
-  Click the three dots, and select "Download Openstack configuration file". Select your deployment region (eg GRA9) and download the file. Next, convert it to yaml:
+  - Click the three dots, and select "Download Openstack configuration file". Select your deployment region (eg GRA9) and download the file. Next, convert it to yaml:
   
   **NOTE:** Make sure to update ovh-gra9 to the correct region if relevant!
 
@@ -253,7 +251,7 @@ EOF
 chmod 600 ~/.config/openstack/clouds.yaml
   ```
 
-  Validate: 
+  - Validate: 
 
   ```bash
 # match your config region above
@@ -262,26 +260,17 @@ openstack server list --limit 1
   ```
 
 
-* _Note : the admin was added to make handling of encrypted block devices work. I suppose it should be possible to lower the rights, but haven't figured out how yet. Let me know if you do :-)_
+_* Note : the admin was added to make handling of encrypted block devices work. I suppose it should be possible to lower the rights, but haven't figured out how yet. Let me know if you do :-)_
 
 
-  
 
-
-### OVHcloud Project Requirements
+### P.8 OVHcloud Project Requirements
 
 - **Project created** and activated in OVHcloud Manager
 - **Project ID** noted (visible in beta-navigation as :  Manager → Public Cloud : Top left)
 
-<!--
-- **At least one API user** with sufficient permissions:
-  - Cloud > Kubernetes
-  - Cloud > Network
-  - Cloud > Storage
-  - Cloud > Identity & Access Management (S3, Barbican)
---> 
 
-### Quotas & Capacity
+### P.9 Quotas & Capacity
 
 Before starting, ensure your OVHcloud project has sufficient quota:
 
@@ -298,9 +287,9 @@ Before starting, ensure your OVHcloud project has sufficient quota:
 
 ---
 
-## Phase 0: Environment Setup
+## (E)nvironment Setup
 
-### Step 0.1: Download Installer script
+### E.1: Download Installer script
 
 ```bash
 mkdir -p ovh_installer
@@ -308,12 +297,32 @@ cd ovh_installer
 wget https://geertvandeweyer.github.io/ovh/files/ovh_installer.tar.gz 
 ```
 
-### Step 0.2: Configure Environment Variables
+### E.2: Configure Environment Variables
 
-Edit `env.variables`. In the top half ("MANDATORY VARIABLES"), review and complete all required settings.
+Edit `env.variables`. In the top half ("MANDATORY VARIABLES"), review and complete all required settings. Some variables requiring specific values are highlighted below: 
 
+| Variable Name | Notes |
+|---------------|-------|
+| OVH_PROJECT_ID | See Manager:Public Cloud: Menu on the left |
+| OVH_REGION | In capitals (eg GRA9)
+| K8S_VERSION | Tested with 1.31 and 1.34 |
+| SYSTEM_FLAVOR | This node is on 24/7, d2-4 should be sufficient, enlarge if you run out of memory/cpu |
+| WORKER FAMILIES | Families to pick workers from |
+| EXCLUDE_TYPES | Instance types in the families above to discard (eg, gpu, windows, ...) |
+| OVH_*_QUOTA | Your quota values, set as upper limits in instance types |
+| WORKER_MAX_* | Similar, limit the instance type sizes  | 
+| *_IMAGE(TAG) | Karpenter and Funnel are deployed from images built by me. Change these to use upstream versions | 
+| MPR_* | Settings related to the private docker registry, adapt to your needs |
+| EXTERNAL_IP | We deploy cromwell on-prem to reduce costs (relatively high resource demands).  This IP is the only IP that will be granted access to the Funnel server |
+| OVH_S3_* | Settings for your (cromwell) bucket.  The bucket will be created during install and holds delocalized data after task execution |
+| READ_BUCKETS | Additional buckets that TES tasks are allowed to read from |
+| WRITE_BUCKETS | Additional buckets that TES tasks are allowed to write to  | 
+| FILE_STORAGE_* | NFS settings, adapt to your needs |
+| NFS_MOUNT_PATH | Path where NFS is mounted in containers. Make sure to match this on Cromwell to enable call-caching |
+| WORK_DIR_* | Settings for autoscaled scratch dir. Adapt to your needs/expected workload |
+| OS_CLOUD |  Match the openstack yaml setting from prerequisites step 7 | 
 
-
+<!--
 ### Step 0.3: Source OpenStack Credentials
 
 ```bash
@@ -321,31 +330,24 @@ source openrc-tes-pilot.sh
 # Prompts for Keystone password
 # Sets OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, etc.
 ```
+-->
 
-### Step 0.4: Verify Prerequisites
+### E.3: Verify Prerequisites
 
 ```bash
 # Check all tools are available
 which ovhcloud openstack kubectl helm envsubst docker
 # Check OVHcloud login
-ovhcloud account whoami
-# Check OpenStack access
+ovhcloud account get
+# Check OpenStack access (no errors, is empty for now)
 openstack server list --limit 1
 # Check Docker registry access (if using custom images)
 docker login  # if needed
 ```
 
-### ✅ Phase 0 Checklist
-
-- [ ] Micromamba environment created with all tools
-- [ ] OVHcloud CLI logged in
-- [ ] OpenStack RC file sourced
-- [ ] env.variables customized with project ID and IPs
-- [ ] All prerequisite commands verified
-
 ---
 
-## Phase 1: Create MKS Cluster
+## (D)eploy Cluster
 
 ### What Happens
 
