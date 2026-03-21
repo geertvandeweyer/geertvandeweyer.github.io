@@ -108,13 +108,13 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
    Recommended to keep all config settings & aliases localized. python3 is added for some utility scripts.
 
    ```bash
-   # Create environment (one-time)
-   micromamba create -n ovh
-   micromamba activate ovh
-   micromamba install \
-     -c conda-forge \
-     -c defaults \
-     python=3 
+# Create environment (one-time)
+micromamba create -n ovh
+micromamba activate ovh
+micromamba install \
+  -c conda-forge \
+  -c defaults \
+  python=3 
    ```
 
    Keep this env active during the install procedure ! 
@@ -122,14 +122,14 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 2. **helm** : package manager for kubernetes
 
    ```bash
-   BIN_DIR=$(dirname $(which python3))
-   mkdir -p helm_release
-   cd helm_release
-   # pick version: 
-   wget https://get.helm.sh/helm-v4.1.1-linux-amd64.tar.gz
-   tar -zxvf helm-v4.1.1-linux-amd64.tar.gz
-   mv linux-amd64/helm "$BIN_DIR"
-   cd ..
+BIN_DIR=$(dirname $(which python3))
+mkdir -p helm_release
+cd helm_release
+# pick version: 
+wget https://get.helm.sh/helm-v4.1.1-linux-amd64.tar.gz
+tar -zxvf helm-v4.1.1-linux-amd64.tar.gz
+mv linux-amd64/helm "$BIN_DIR"
+cd ..
    ```
 
 3. **OVHcloud CLI** : interact with OVHcloud
@@ -137,14 +137,14 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
    First, install the client : 
 
    ```bash
-   BIN_DIR=$(dirname $(which python3))
-   mkdir -p ovhcli_release
-   cd ovhcli_release
-   # pick version: 
-   wget https://github.com/ovh/ovhcloud-cli/releases/download/v0.10.0/ovhcloud-cli_Linux_x86_64.tar.gz
-   tar -zxvf ovhcloud-cli_Linux_x86_64.tar.gz
-   mv ovhcloud "$BIN_DIR"
-   cd ..
+BIN_DIR=$(dirname $(which python3))
+mkdir -p ovhcli_release
+cd ovhcli_release
+# pick version: 
+wget https://github.com/ovh/ovhcloud-cli/releases/download/v0.10.0/ovhcloud-cli_Linux_x86_64.tar.gz
+tar -zxvf ovhcloud-cli_Linux_x86_64.tar.gz
+mv ovhcloud "$BIN_DIR"
+cd ..
    ```
 
    Then, login to [ovh manager](https://www.ovh.com/manager/). Once logged in, create local credentials using : 
@@ -161,14 +161,14 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
 4. **kubectl** : interact with kubernete clusters
 
    ```bash
-   BIN_DIR=$(dirname $(which python3))
-   mkdir -p kubectl_release
-   cd kubectl_release
-   # latest version: 
-   curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-   chmod +x kubectl
-   mv kubectl "$BIN_DIR"
-   cd ..
+BIN_DIR=$(dirname $(which python3))
+mkdir -p kubectl_release
+cd kubectl_release
+# latest version: 
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl
+mv kubectl "$BIN_DIR"
+cd ..
    ```
 
 <!-- (generated during install ? )
@@ -185,13 +185,13 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
    OVHcloud is compatible with S3, so we can use the aws cli to interact with object storage. First, install the client: 
 
    ```bash
-   BIN_DIR=$(dirname $(which python3))
-   mkdir -p awscli_release
-   cd awscli_release
-   # latest version:
-   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-   unzip awscliv2.zip
-   ./aws/install --bin-dir "$BIN_DIR" --install-dir "$BIN_DIR/../"
+BIN_DIR=$(dirname $(which python3))
+mkdir -p awscli_release
+cd awscli_release
+# latest version:
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+./aws/install --bin-dir "$BIN_DIR" --install-dir "$BIN_DIR/../"
    ```
 
    Setup of the credentials will happen later. 
@@ -201,7 +201,7 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
    Install the client: 
 
    ```bash
-   pip install python-openstackclient
+pip install python-openstackclient
    ```
 
    Get the credentials (see point 8)
@@ -256,10 +256,10 @@ chmod 600 ~/.config/openstack/clouds.yaml
   Validate: 
 
   ```bash
-  # match your config region above
-  export OS_CLOUD=ovh-gra9
-  openstack server list --limit 1
-
+# match your config region above
+export OS_CLOUD=ovh-gra9
+openstack server list --limit 1
+  ```
 
 
 * _Note : the admin was added to make handling of encrypted block devices work. I suppose it should be possible to lower the rights, but haven't figured out how yet. Let me know if you do :-)_
@@ -303,9 +303,9 @@ Before starting, ensure your OVHcloud project has sufficient quota:
 ### Step 0.1: Download Installer script
 
 ```bash
-cd /path/to/workspace
-git clone <repo-url> k8s-ovh
-cd k8s-ovh/OVH_installer/installer
+mkdir -p ovh_installer
+cd ovh_installer
+wget https://geertvandeweyer.github.io/ovh/files/ovh_installer.tar.gz 
 ```
 
 ### Step 0.2: Configure Environment Variables
