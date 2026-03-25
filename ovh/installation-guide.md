@@ -555,16 +555,32 @@ consolidateAfter: 5m      # Scale down idle nodes after 5 min
 consolidationPolicy: WhenEmpty  # Consolidate empty nodes
 ```
 
-**Instance types** (Karpenter selects based on workload fit within limits):
+**Flavor selection** (Karpenter selects based on workload fit within limits):
 
-| Family | Flavor | vCPU | RAM | Type | Use Case |
-|--------|--------|------|-----|------|----------|
-| **c3** | c3-4 | 2 | 8 GB | Intel Xeon | Small batch tasks |
-| **c3** | c3-8 | 4 | 16 GB | Intel Xeon | Medium parallel tasks |
-| **c3** | c3-16 | 8 | 32 GB | Intel Xeon | Large parallel tasks |
-| **c3** | c3-32 | 16 | 64 GB | Intel Xeon | Memory-heavy tasks |
+- `WORKER_FAMILIES`: controls allowed families (e.g. `c3`, `r3`, `g3`)
+- `WORKER_MAX_VCPU` / `WORKER_MAX_RAM_GB`: cap per flavor to keep within quota
+- `OVH_VCPU_QUOTA` / `OVH_RAM_QUOTA_GB`: cluster-level caps in script logic
 
-> **Note:** Instance types are restricted to the `c3` (compute) family with per-flavor caps (`WORKER_MAX_VCPU=16`, `WORKER_MAX_RAM_GB=32`). This prevents Karpenter from selecting oversized GPU/HPC flavors that would exceed your OVH quota, causing `412 InsufficientVCPUsQuota` errors.
+Common families:
+- `c3`: compute-optimized (best cost / general CPU-bound workloads)
+- `r3`: memory-optimized (high RAM per vCPU, useful for large in-memory tasks)
+- `g3`, `a3`: GPU / accelerated workloads (often excluded for `WORKER_FAMILIES` in this setup)
+
+> **Note:** The effective configured instance-type list is computed by `update-nodepool-flavors.sh` using current OVH flavor catalog + those env variables.
+
+### Print configured Karpenter flavors
+
+From cluster:
+
+```bash
+kubectl get nodepool -n karpenter workers -o jsonpath='{.spec.requirements[?(@.key=="node.kubernetes.io/instance-type")].values}'
+```
+
+From installer filter result (same algorithm used to apply NodePool):
+
+```bash
+./update-nodepool-flavors.sh ./env.variables | grep -A5 "requirements" -n
+```
 
 ### Verification
 
