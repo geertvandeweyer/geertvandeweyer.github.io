@@ -71,18 +71,18 @@ This guide automates the deployment of a **genomics workflow platform** on OVHcl
           └──────────────────────────┬─────────────┘───────────────────┘
                                      │
               ┌──────────────────────▼───────────────┐
-              │  Manila NFS (/mnt/shared, 150GB)     │
-              │  OVH Cloud (private Neutron vRack)   │
-              └──────────────────────────────────────┘
+              │   Private Neutron vRack / vrack      │
+              │   (shared network for storage)       │
+              └─────────────┬────────────────────────┘
                             │
-                            │ (Karpenter worker nodes mount via DaemonSet)
-                            │ (Task containers mount via nerdctl --volume)
-                            │
-              ┌─────────────────────────────────────┐
-              │  OVH S3 Object Storage               │
-              │  https://s3.gra.io.cloud.ovh.net    │
-              │  (task inputs/outputs/logs)         │
-              └─────────────────────────────────────┘
+                  ┌─────────┴─────────────────────────┐
+                  │                                   │
+      ┌───────────▼──────────────────────────┐  ┌─────▼─────────────────────────────┐
+      │  Manila NFS (/mnt/shared, 150GB)     │  │  OVH S3 Object Storage            │
+      │  OVH Cloud (private Neutron vRack)   │  │  https://s3.gra.io.cloud.ovh.net  │
+      │  (nodes mount via DaemonSet,         │  │  (task inputs/outputs/logs)       │
+      │     containers mount via --volume)   |  |                                   │
+      └──────────────────────────────────────┘  └───────────────────────────────────┘
 ```
 
 ### Key Components
@@ -154,9 +154,11 @@ ovhcloud login
 # Saves credentials to ~/.ovh.conf
    ```
 
-When asked top open the webpage, fill in your details to generate api keys:
+When asked to open the webpage, fill in your details to generate API keys:
 
 ![OVH credentials creation](../../images/ovh_credentials_creation.png)
+
+⭐ **Important**: These credentials are automatically loaded by the installer from `~/.ovh.conf` during the installation process. 
 
 
 ### P.4 kubectl
@@ -203,7 +205,15 @@ pip install python-openstackclient
 
 Get the credentials (see point 8)
 
-### P.7 Create User
+### P.7 pip modules
+
+The following pip modules must be installed into the conda env: 
+
+   ```bash
+pip install python-manilaclient
+   ```
+
+### P.8 Create User
 
 An OVH user must be created with sufficients rights to handle the deployment: 
 
@@ -351,20 +361,44 @@ docker login  # if needed
 
 ### What Happens
 
-This phase creates:
+The installer orchestrates all setup in ordered phases (0–8) to provision OVH resources, deploy Karpenter and Funnel, and configure Cromwell integration.
 
-1. **Private Neutron network** (192.168.100.0/24) — required by MKS & Manila NFS
-2. **MKS Kubernetes cluster** — hosted MKS on OVHcloud
-3. **kubeconfig file** — saved to `~/.kube/ovh-tes.yaml`
+1. **Phase 0**: Validate environment variables, credentials, prerequisite CLIs
+2. **Phase 1**: Create private Neutron network + MKS cluster + kubeconfig
+3. **Phase 2**: Install Karpenter, create system node and worker nodepool
+4. **Phase 3**: Create Manila NFS share, deploy NFS CSI and keepalive DaemonSet
+5. **Phase 4**: Create S3 bucket and credentials
+6. **Phase 4.2**: Create private registry and secrets for image pulls
+7. **Phase 5**: Deploy Funnel resources (namespace/CRs/deployments/services)
+8. **Phase 6**: Configure micromamba activation env script
+9. **Phase 7**: Print Cromwell TES backend config snippet
+10. **Phase 8**: Smoke test Funnel `/v1/service-info`
 
 ### Execution
 
 ```bash
-cd OVH_installer/installer
+cd installer/
 ./install-ovh-mks.sh
 ```
 
-The script will pause at Phase 1 and ask for confirmation. **Expected output:**
+The script may ask for confirmations, and behavior is driven by `env.variables`.
+
+---
+
+## Phase 1: Create MKS Cluster
+
+### Goal
+
+Provision OVH cloud network and control plane in a fully managed MKS cluster; output kubeconfig for kubectl.
+
+### What Gets Created
+
+- Private Neutron network: `${PRIV_NET_NAME}` in OVH region
+- Subnet and gateway reservation (for LoadBalancer services)
+- MKS Kubernetes cluster: `${K8S_CLUSTER_NAME}`
+- `~/.kube/ovh-tes.yaml` kubeconfig
+
+### Expected Output
 
 ```
 ============================================
@@ -385,30 +419,86 @@ Creating MKS cluster 'tes-pilot' (Kubernetes 1.31)...
 Kubeconfig saved to: /home/user/.kube/ovh-tes.yaml
 ```
 
-### Verification
+### Common Issues
+
+- OVH quotas insufficient for requested cluster size or network cannot be created
+- OpenStack credentials (`~/.config/openstack/clouds.yaml`) missing or invalid
+- `ovhcloud login` not authenticated
+
+### Manual Verification
 
 ```bash
 export KUBECONFIG=~/.kube/ovh-tes.yaml
 kubectl get nodes
-# Expected output:
-# NAME                 STATUS   ROLES   AGE   VERSION
-# system-node-b89e91   Ready    <none>  2m    v1.31.13
-
-kubectl get pods -n kube-system | head -10
-# Should see: coredns, kube-proxy, etc.
+kubectl get ns
+kubectl get svc --all-namespaces
 ```
-
-### 💰 Cost Impact
-
-- **MKS cluster control plane**: Free (OVH free tier)
-- **System node (d2-4)**: ~€0.005/hour = ~€3.60/month (always-on)
 
 ### ✅ Phase 1 Checklist
 
-- [ ] Private network created
-- [ ] MKS cluster status is ACTIVE
-- [ ] kubeconfig generated and set
-- [ ] `kubectl get nodes` shows system-node Ready
+- [ ] Private network created (`ovhcloud cloud network private list`)
+- [ ] MKS cluster state `ACTIVE` (`ovhcloud cloud kube list`)
+- [ ] kubeconfig exists and connects (`kubectl cluster-info`)
+- [ ] Base node(s) ready (`kubectl get nodes`)
+
+---
+
+## Phase 2: Node Pools & Autoscaling
+
+### Goal
+
+Set up Karpenter autoscaling to manage worker nodes dynamically and constrain instance types to quotas.
+
+### What Gets Created
+
+- Karperner namespace, custom resources (NodePool/NodeClaim)
+- Karpenter OVH provider deployment (Helm chart)
+- System node pool (`system`) on fixed `SYSTEM_FLAVOR`
+- Worker NodePool `workers` with filtered flavors + limits
+
+### Expected Output
+
+```
+============================================
+ Phase 2: Create node pools
+============================================
+
+Creating node pool 'workers' with flavors: c3
+✅ Node pool created
+
+============================================
+ Phase 2.5: Karpenter node autoscaler
+============================================
+
+Installing Karpenter + OVHcloud provider...
+[Helm installing karpenter-ovhcloud...]
+deployment "karpenter" successfully rolled out
+✅ Karpenter deployed (replicas: 2, high availability)
+✅ NodePool 'workers' configured: c3 family, vCPU limit 32
+```
+
+### Common Issues
+
+- Missing OVH API credentials for Karpenter app key / consumer key
+- NodePool flavor list returns empty if filtering is too strict
+- `karpenter` pods stuck in CrashLoopBackOff due to RBAC or secret issues
+
+### Manual Verification
+
+```bash
+kubectl get pod -n karpenter
+kubectl get nodepools
+kubectl get nodeclaims
+kubectl describe nodepool workers
+kubectl get nodes -l karpenter.sh/nodepool=workers
+```
+
+### ✅ Phase 2 Checklist
+
+- [ ] `karpenter` deployment running
+- [ ] `system` node pool has 1 node
+- [ ] `workers` node pool created with expected limits
+- [ ] `NodeClaims` are created as workloads schedule
 
 ---
 
@@ -549,22 +639,18 @@ This script:
 
 ## Phase 3: Manila NFS Shared Storage
 
-### What Happens
+### Goal
 
-This phase creates:
+Provide a shared RWX file system for task outputs and workflow caching via OVH Manila NFS.
 
-1. **Manila NFS share** (150 GB) on the private network
-2. **Kubernetes PVC** + StorageClass for Manila CSI
-3. **DaemonSet pod** that mounts NFS and maintains TCP keepalive
-4. **Shared volume available** at `/mnt/shared` on all worker nodes
+### What Gets Created
 
-### Why DaemonSet + Keepalive?
+- OVH Manila NFS share (`FILE_STORAGE_SIZE`, `FILE_STORAGE_SHARE_TYPE`)
+- Access rule bound to the private Neutron vRack
+- Kubernetes StorageClass / PVC for NFS
+- `funnel-disk-setup` DaemonSet (keepalive + NFS mount + disk expansion logic)
 
-OVH Manila's NFS has idle TCP timeout (~minutes). Without keepalive, after a task completes, the TCP connection dies. When a new task starts, the `mkdir /mnt/shared` fails with "Input/output error" on a stale VFS entry.
-
-**Solution**: The `funnel-disk-setup` DaemonSet continuously touches `/mnt/shared/.keepalive` every 30 seconds, keeping the connection alive. Each task pod's `setup-nfs` initContainer just waits for NFS to be ready (non-privileged, safe for parallel tasks).
-
-### Execution
+### Expected Output
 
 ```
 ============================================
@@ -587,61 +673,52 @@ Deploying NFS mount DaemonSet + CSI driver...
 ✅ DaemonSet deployed (pod per worker node)
 ```
 
-### Verification
+### Potential Issues
+
+- NFS share in `ERROR` state due quotas or network mismatch
+- DaemonSet fails to start if RBAC/nodes labels are missing
+- `File system has stale NFS handle` if keepalive not running
+
+### Manual Verification
 
 ```bash
-# Check the PVC
 kubectl get pvc -n funnel
-# NAME                STATUS   VOLUME   CAPACITY   AGE
-# manila-shared-pvc   Bound    pv-...   150Gi      2m
-
-# Check the mount DaemonSet
+kubectl get storageclass manila-nfs
+kubectl get daemonset funnel-disk-setup -n funnel
 kubectl get pods -n funnel -l app=funnel-disk-setup
-# NAME                       READY   STATUS    AGE
-# funnel-disk-setup-abc12    1/1     Running   2m
-# funnel-disk-setup-def34    1/1     Running   2m
-
-# Check mount is accessible
-kubectl exec -n funnel funnel-disk-setup-abc12 -- ls /mnt/shared
-# (should list no errors)
-
-# Check keepalive touchdowns
-kubectl exec -n funnel funnel-disk-setup-abc12 -- ls -la /mnt/shared/.keepalive
-# -rw-r--r-- 1 root root 0 Mar 12 14:35 /mnt/shared/.keepalive
+kubectl exec -n funnel $(kubectl get pod -n funnel -l app=funnel-disk-setup -o jsonpath='{.items[0].metadata.name}') -- ls /mnt/shared
+kubectl exec -n funnel $(kubectl get pod -n funnel -l app=funnel-disk-setup -o jsonpath='{.items[0].metadata.name}') -- ls -la /mnt/shared/.keepalive
 ```
-
-### 💰 Cost Impact
-
-- **Manila share (150 GB)**: ~€6/month
-- **NFS traffic** (private network): free (not counted as WAN)
 
 ### ✅ Phase 3 Checklist
 
-- [ ] Manila share status is AVAILABLE
-- [ ] PVC `manila-shared-pvc` is Bound
-- [ ] DaemonSet pod is Running on each worker node
-- [ ] `/mnt/shared` is accessible (non-empty `.keepalive` file)
+- [ ] Manila share is AVAILABLE
+- [ ] `manila-shared-pvc` is Bound
+- [ ] `funnel-disk-setup` pods are Running on each worker node
+- [ ] `/mnt/shared` is mounted and accessible
 
 ---
 
 ## Phase 4: S3 Object Storage
 
-### What Happens
+### Goal
 
-This phase:
+Create and configure OVH-compatible S3 for Funnel task input/output and logs.
 
-1. Creates **OVH S3 bucket** for task I/O and logs
-2. Creates **OVH API credentials** (access key + secret)
-3. Stores credentials in **Kubernetes Secret** for Funnel worker access
+### What Gets Created
 
-### Execution
+- S3 credentials (access key/secret) for the cloud user
+- S3 bucket (`OVH_S3_BUCKET`) under that user permissions
+- Kubernetes Secret `ovh-s3-credentials` with base64 values
+
+### Expected Output
 
 ```
 ============================================
  Phase 4: S3 bucket + credentials
 ============================================
 
-Creating S3 bucket 'tes-tasks-c386d174c0974008bac7b36c4dfafb23-gra9'...
+Creating S3 bucket 'tes-tasks-...-gra9'...
 ✅ S3 bucket created
 
 Creating S3 credentials (access key + secret)...
@@ -651,51 +728,31 @@ Storing credentials in Kubernetes Secret 'ovh-s3-credentials'...
 ✅ Secret created
 ```
 
-### Configuration
+### Potential Issues
 
-**S3 endpoint (OVH-specific, not AWS):**
+- 403 on bucket operations when S3 user mismatch occurs (bucket creation with wrong identity)
+- Existing access key without secret available (requires rotate or manual secret entry)
+- Wrong endpoint region mapping (`gra` vs `gra9`)
 
-```bash
-export AWS_ENDPOINT=https://s3.gra.io.cloud.ovh.net
-export AWS_REGION=gra  # Note: 'gra', not 'gra9'
-export AWS_S3_ADDRESSING_STYLE=path  # Required for OVH
-```
-
-**Bucket access policy:**
-
-- **READ_BUCKETS**: `*` (workers can read from any bucket)
-- **WRITE_BUCKETS**: empty (only write to the TES bucket)
-
-### Verification
+### Manual Verification
 
 ```bash
-# List buckets (local check, using ~/ .aws/config)
-aws s3 ls --profile ovh
-
-# Check the Kubernetes Secret
-kubectl get secrets -n funnel ovh-s3-credentials -o yaml
-# Should show base64-encoded s3_access_key and s3_secret_key
-
-# Test access from a pod
-kubectl run -n funnel s3-test --rm -it \
-  --env=AWS_ACCESS_KEY_ID=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_access_key}' | base64 -d) \
-  --env=AWS_SECRET_ACCESS_KEY=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_secret_key}' | base64 -d) \
-  --image=amazon/aws-cli:latest \
-  -- s3 ls --endpoint-url https://s3.gra.io.cloud.ovh.net/
+AWS_ACCESS_KEY_ID=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_access_key}' | base64 -d)
+AWS_SECRET_ACCESS_KEY=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_secret_key}' | base64 -d)
+aws --endpoint-url ${OVH_S3_ENDPOINT} --region ${OVH_S3_REGION} s3 ls
+aws --endpoint-url ${OVH_S3_ENDPOINT} --region ${OVH_S3_REGION} s3api get-bucket-location --bucket ${OVH_S3_BUCKET}
+kubectl get secret -n funnel ovh-s3-credentials -o yaml
 ```
-
-### 💰 Cost Impact
-
-- **S3 storage**: €0.06 per GB/month (minimized by cleanup policies)
-- **S3 API calls**: €0.003 per 1000 requests (negligible)
 
 ### ✅ Phase 4 Checklist
 
-- [ ] S3 bucket created (visible in OVH Manager)
-- [ ] Kubernetes Secret `ovh-s3-credentials` exists
-- [ ] Secret contains valid access key & secret
-- [ ] Bucket is accessible via `aws s3 ls`
+- [ ] S3 bucket exists in OVH
+- [ ] `ovh-s3-credentials` secret exists in namespace `${TES_NAMESPACE}`
+- [ ] Credentials are valid from an AWS CLI pod
 
+---
+
+## Phase 4.5: Private Container Registry
 ---
 
 ## Phase 4.5: Private Container Registry
@@ -745,13 +802,10 @@ This phase:
    └──────────────────────────────────────────────────┘
 ```
 
-### OVH Plans
+### Plan Notes
 
-| Plan | Storage | Connections | Vuln. Scanning | Use Case |
-|------|---------|-------------|----------------|----------|
-| **S** | 200 GB | 15 | ❌ | Small projects, testing |
-| **M** | 200 GB | 45 | ✅ Trivy | SMEs, product teams |
-| **L** | 5 TB | 90 | ✅ Trivy | Large orgs, intensive use |
+- Choose the planned capacity based on expected image storage and concurrent task pulls.
+- For simple testing, `S` is normally sufficient; upgrade to `M` or `L` as your load grows.
 
 ### Step 1: Create the Registry
 
@@ -981,7 +1035,7 @@ kubectl run -n funnel nerdctl-test --rm -it \
 
 ### Important Notes
 
-⚠️ **nerdctl vs K8s image pulling**: Funnel uses nerdctl to pull task images on the host, not Kubernetes. K8s `imagePullSecrets` only affect the Funnel worker pod image itself, not the task container images.
+⚠️ **nerdctl vs K8s image pulling**: Funnel uses nerdctl to pull task images on the host, not Kubernetes. K8s `imagePullSecrets` only affect the Funnel worker pod image itself, not task container images.
 
 ⚠️ **Registry URL is unique**: Each registry gets a random hash prefix (e.g., `8093ff7x.gra5.container-registry.ovh.net`). Store this in `env.variables`.
 
@@ -989,27 +1043,34 @@ kubectl run -n funnel nerdctl-test --rm -it \
 
 ⚠️ **Harbor projects**: Images must be pushed to an existing Harbor project. Create one before pushing.
 
-### 💰 Cost Impact
+### Potential Issues
 
-| Plan | Monthly Cost | Storage | Notes |
-|------|-------------|---------|-------|
-| **S** | ~€5/month | 200 GB | Sufficient for most use cases |
-| **M** | ~€15/month | 200 GB | Includes Trivy vulnerability scanning |
-| **L** | ~€45/month | 5 TB | For large image collections |
+- `docker login` fails on registry URL if username/password are incorrect
+- Task containers fail with `unauthorized: access denied` if `nerdctl` auth is missing in worker configmap
+- PR contains `registry not found` if `MPR_REGISTRY_URL` is misconfigured
 
-- Image pulls within OVH: **FREE** (no bandwidth charges)
-- Image pushes: Included in plan
+### Manual Verification
+
+```bash
+# Validate registry exists and is ready
+ovhcloud cloud container-registry list --cloud-project ${OVH_PROJECT_ID} | grep ${MPR_REGISTRY_NAME}
+
+# Check Kubernetes Secret and ConfigMap
+kubectl -n ${TES_NAMESPACE} get secret regcred -o yaml
+kubectl -n ${TES_NAMESPACE} get configmap docker-registry-config -o yaml
+
+# Pull a sample image via nerdctl in a debug worker pod
+kubectl debug node/<worker-node> --image=alpine -- sh -c 'nerdctl login --username ${MPR_HARBOR_USER} --password ${MPR_HARBOR_PASSWORD} ${MPR_REGISTRY_URL} && nerdctl pull ${MPR_REGISTRY_URL}/<org>/<image>:<tag>'
+```
 
 ### ✅ Phase 4.5 Checklist
 
-- [ ] Registry "tes-mpr" created in GRA9 (visible in OVHcloud Manager, status: OK)
-- [ ] Harbor admin credentials generated and securely stored
-- [ ] Harbor project created (e.g., `cmgantwerpen`)
-- [ ] K8s Secret `regcred` created in `funnel` namespace
-- [ ] nerdctl registry auth configured on worker nodes (Docker config mounted)
-- [ ] Test image pushed to registry from local machine
-- [ ] Test image pulled successfully in a Funnel task
-- [ ] Registry URL stored in `env.variables` as `MPR_REGISTRY_URL`
+- [ ] Registry "tes-mpr" created in GRA9 and READY
+- [ ] Harbor credentials created and stored in env.variables
+- [ ] Harbor project exists and image pushed
+- [ ] K8s Secret `regcred` exists in namespace `${TES_NAMESPACE}`
+- [ ] ConfigMap `docker-registry-config` exists for nerdctl
+- [ ] `nerdctl pull` works from worker nodes
 
 ---
 
@@ -1100,18 +1161,18 @@ curl http://51.68.237.8:8000/v1/tasks
 # Should return: {"tasks":[]}  (empty initially)
 ```
 
-### 💰 Cost Impact
+### Potential Issues
 
-- **Funnel server pod**: negligible (100 m CPU request)
-- **Worker pods** (created per task): variable (depends on task requests)
-- **DaemonSet overhead**: minimal (per node)
+- Funnel deployment may stay Pending if Karpenter cannot schedule worker nodes (quota limits or nodepool constraints)
+- LoadBalancer IP may be delayed by OVH network provisioning
+- `funnel-disk-setup` daemonset can fail if OpenStack credentials are invalid or `Cinder` volume provisioning fails
 
 ### ✅ Phase 5 Checklist
 
-- [ ] Funnel Server pod is Running
-- [ ] LoadBalancer has external IP assigned
-- [ ] Cinder auto-expander DaemonSet is Running
-- [ ] Funnel API responds to `/v1/tasks`
+- [ ] Funnel Server deployment is Ready
+- [ ] LoadBalancer service has an external IP
+- [ ] `funnel-disk-setup` DaemonSet is Running on all active nodes
+- [ ] `curl http://<LB_IP>:8000/v1/tasks` returns 200 JSON
 
 ---
 
