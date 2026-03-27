@@ -447,62 +447,13 @@ kubectl get svc --all-namespaces
 
 ### Goal
 
-Set up Karpenter autoscaling to manage worker nodes dynamically and constrain instance types to quotas.
+Set up Karpenter autoscaling to manage worker nodes dynamically and constrain instance types to quotas.  I didn't use the built-in autoscaler from OVHcloud for the following reasons: 
 
-### What Gets Created
+- More flexibility in instance-type selection (see below).
+- Advanced node configuration to enable scratch autoscaling and NFS setup. 
 
-- Karperner namespace, custom resources (NodePool/NodeClaim)
-- Karpenter OVH provider deployment (Helm chart)
-- System node pool (`system`) on fixed `SYSTEM_FLAVOR`
-- Worker NodePool `workers` with filtered flavors + limits
+The OVH Karpenter provider bin-packs pending pods onto as few nodes as possible. Without proper instance-type filtering, it would select the largest flavor available, potentially leading to quota rejection. With filtering + limits, Karpenter respects the resource constraints in your project.
 
-### Expected Output
-
-```
-============================================
- Phase 2: Create node pools
-============================================
-
-Creating node pool 'workers' with flavors: c3
-✅ Node pool created
-
-============================================
- Phase 2.5: Karpenter node autoscaler
-============================================
-
-Installing Karpenter + OVHcloud provider...
-[Helm installing karpenter-ovhcloud...]
-deployment "karpenter" successfully rolled out
-✅ Karpenter deployed (replicas: 2, high availability)
-✅ NodePool 'workers' configured: c3 family, vCPU limit 32
-```
-
-### Common Issues
-
-- Missing OVH API credentials for Karpenter app key / consumer key
-- NodePool flavor list returns empty if filtering is too strict
-- `karpenter` pods stuck in CrashLoopBackOff due to RBAC or secret issues
-
-### Manual Verification
-
-```bash
-kubectl get pod -n karpenter
-kubectl get nodepools
-kubectl get nodeclaims
-kubectl describe nodepool workers
-kubectl get nodes -l karpenter.sh/nodepool=workers
-```
-
-### ✅ Phase 2 Checklist
-
-- [ ] `karpenter` deployment running
-- [ ] `system` node pool has 1 node
-- [ ] `workers` node pool created with expected limits
-- [ ] `NodeClaims` are created as workloads schedule
-
----
-
-## Phase 2: Node Pools & Autoscaling
 
 ### What Happens
 
@@ -540,6 +491,9 @@ deployment "karpenter" successfully rolled out
 
 **Karpenter NodePool (`workers`):**
 
+
+This configuration is rendered during install, based on your `env.variables` settings. 
+
 ```yaml
 requirements:
   - key: kubernetes.io/arch
@@ -547,7 +501,7 @@ requirements:
     values: [amd64]
   - key: node.kubernetes.io/instance-type
     operator: In
-    values: [c3-4, c3-8, c3-16, c3-32]  # Only right-sized compute flavors
+    values: [b3-8, c3-4, c3-8, c3-16, r3-32]  # Only right-sized compute flavors
 limits:
   cpu: "32"        # Reserve 2 vCPU for system node (34 - 2)
   memory: "426Gi"  # Reserve 4 GB for system node (430 - 4)
@@ -557,15 +511,19 @@ consolidationPolicy: WhenEmpty  # Consolidate empty nodes
 
 **Flavor selection** (Karpenter selects based on workload fit within limits):
 
-- `WORKER_FAMILIES`: controls allowed families (e.g. `c3`, `r3`, `g3`)
+Set these in `env.variables` : 
+
+- `WORKER_FAMILIES`: controls allowed families (e.g. `b3`, `c3`, `r3`, `g3`)
 - `WORKER_MAX_VCPU` / `WORKER_MAX_RAM_GB`: cap per flavor to keep within quota
 - `OVH_VCPU_QUOTA` / `OVH_RAM_QUOTA_GB`: cluster-level caps in script logic
+- `EXCLUDE_TYPES` : Explicit list of patterns to skip instance types (e.g. : win,gpu,rtx)
 
 Common families:
-- `c3`: compute-optimized (best cost / general CPU-bound workloads)
-- `r3`: memory-optimized (high RAM per vCPU, useful for large in-memory tasks)
-- `g3`, `a3`: GPU / accelerated workloads (often excluded for `WORKER_FAMILIES` in this setup)
+- `d2`: Discovery instances (tiny and cheap)
+- `c2/c3`: compute-optimized (best cost / general CPU-bound workloads)
+- `r2/r3`: memory-optimized (high RAM per vCPU, useful for large in-memory tasks)
 
+> **Note:** Second Generation instance (e.g. `c2`) are not necessarily cheaper for similar resources compared to third generation! 
 > **Note:** The effective configured instance-type list is computed by `update-nodepool-flavors.sh` using current OVH flavor catalog + those env variables.
 
 ### Print configured Karpenter flavors
@@ -573,14 +531,9 @@ Common families:
 From cluster:
 
 ```bash
-kubectl get nodepool -n karpenter workers -o jsonpath='{.spec.requirements[?(@.key=="node.kubernetes.io/instance-type")].values}'
+kubectl get nodepool -n karpenter workers -o jsonpath='{.spec.template.spec.requirements[?(@.key=="node.kubernetes.io/instance-type")].values}'
 ```
 
-From installer filter result (same algorithm used to apply NodePool):
-
-```bash
-./update-nodepool-flavors.sh ./env.variables | grep -A5 "requirements" -n
-```
 
 ### Verification
 
@@ -594,11 +547,17 @@ kubectl get nodeclaims
 
 kubectl logs -n karpenter -l app.kubernetes.io/name=karpenter | tail -20
 # Check for "Karpenter v0.32.x" message
+
+kubectl get nodepool workers -o yaml | grep -A2 limits
+# Matches your set project limits
+
 ```
 
 ### ⚙️ Quota Management
 
 **Environment Variables** (in `env.variables`):
+
+To summarize : These variables define your total k8s cluster capacity.
 
 ```bash
 WORKER_FAMILIES="c3"           # Only compute family (not GPU/HPC/memory)
@@ -613,22 +572,27 @@ These variables:
 - **Set NodePool limits** to prevent over-provisioning
 - **Enable per-flavor caps** to avoid selecting resource-heavy outliers
 
-The installer script (`install-ovh-mks.sh`) and standalone update script (`update-nodepool-flavors.sh`) both use these variables to generate the NodePool dynamically.
+> **Note** : Quota are Project-specific. 
 
-**Why?** OVH Karpenter bin-packs pending pods onto as few nodes as possible. Without instance-type filtering, it would select the largest flavor available (e.g., `a10-90` with 90 vCPU), leading to quota rejection. With filtering + limits, Karpenter respects your resource constraints.
+To inspect your current quota:
 
-### 💰 Cost Impact
+```bash
+openstack quota show
+```
 
-- **Karpenter overhead**: negligible (2 replicas, ~100 m CPU each)
-- **Worker nodes**: created on-demand, removed when idle
-- **c3 instance cost**: ~€0.020–€0.100/hour depending on size and region
+### Common Issues
+
+- Missing OVH API credentials for Karpenter app key / consumer key
+- NodePool flavor list returns empty if filtering is too strict
+- `karpenter` pods stuck in CrashLoopBackOff due to RBAC or secret issues
+
 
 ### ✅ Phase 2 Checklist
 
 - [ ] Karpenter deployment shows Running
-- [ ] NodePool "workers" is Ready and contains only c3 instance types
+- [ ] NodePool "workers" is Ready and contains only acceptable instance flavors
 - [ ] Karpenter logs show no errors
-- [ ] Verify NodePool limits match your OVH quota: `kubectl get nodepool workers -o yaml | grep -A2 limits`
+- [ ] NodePool limits match your OVH quota
 
 ### 🔧 Updating Karpenter Configuration Post-Deployment
 
@@ -664,7 +628,7 @@ Provide a shared RWX file system for task outputs and workflow caching via OVH M
 - OVH Manila NFS share (`FILE_STORAGE_SIZE`, `FILE_STORAGE_SHARE_TYPE`)
 - Access rule bound to the private Neutron vRack
 - Kubernetes StorageClass / PVC for NFS
-- `funnel-disk-setup` DaemonSet (keepalive + NFS mount + disk expansion logic)
+- `wait-for-nfs-csi-socket` DaemonSet (wait for NFS mount on fresh nodes)
 
 ### Expected Output
 
@@ -699,18 +663,22 @@ Deploying NFS mount DaemonSet + CSI driver...
 
 ```bash
 kubectl get pvc -n funnel
+# shows the manila-shared-pvc volume claim with set capacity
+
 kubectl get storageclass manila-nfs
-kubectl get daemonset funnel-disk-setup -n funnel
-kubectl get pods -n funnel -l app=funnel-disk-setup
+# shows some details on the manila-nfs volume
+
 kubectl exec -n funnel $(kubectl get pod -n funnel -l app=funnel-disk-setup -o jsonpath='{.items[0].metadata.name}') -- ls /mnt/shared
+# when pods are running : show contents of the NFS volume
+
 kubectl exec -n funnel $(kubectl get pod -n funnel -l app=funnel-disk-setup -o jsonpath='{.items[0].metadata.name}') -- ls -la /mnt/shared/.keepalive
+# when pods are running : show last access time of the .keepalive pointer
 ```
 
 ### ✅ Phase 3 Checklist
 
 - [ ] Manila share is AVAILABLE
 - [ ] `manila-shared-pvc` is Bound
-- [ ] `funnel-disk-setup` pods are Running on each worker node
 - [ ] `/mnt/shared` is mounted and accessible
 
 ---
@@ -753,8 +721,8 @@ Storing credentials in Kubernetes Secret 'ovh-s3-credentials'...
 ### Manual Verification
 
 ```bash
-AWS_ACCESS_KEY_ID=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_access_key}' | base64 -d)
-AWS_SECRET_ACCESS_KEY=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_secret_key}' | base64 -d)
+export AWS_ACCESS_KEY_ID=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_access_key}' | base64 -d)
+export AWS_SECRET_ACCESS_KEY=$(kubectl get secret -n funnel ovh-s3-credentials -o jsonpath='{.data.s3_secret_key}' | base64 -d)
 aws --endpoint-url ${OVH_S3_ENDPOINT} --region ${OVH_S3_REGION} s3 ls
 aws --endpoint-url ${OVH_S3_ENDPOINT} --region ${OVH_S3_REGION} s3api get-bucket-location --bucket ${OVH_S3_BUCKET}
 kubectl get secret -n funnel ovh-s3-credentials -o yaml
@@ -768,14 +736,11 @@ kubectl get secret -n funnel ovh-s3-credentials -o yaml
 
 ---
 
-## Phase 4.5: Private Container Registry
----
-
-## Phase 4.5: Private Container Registry
+## Phase 5: Private Container Registry
 
 ### What Happens
 
-This phase:
+This phase is optional, you _can_ use public dockerhub images. This phase performs:
 
 1. Creates an **OVH Managed Private Registry (MPR)** named `tes-mpr` — a Harbor-based container registry
 2. Generates **Harbor admin credentials** for the registry
@@ -812,7 +777,7 @@ This phase:
    │  Kubernetes Cluster (MKS)                        │
    │  ┌────────────────────────────────────────────┐  │
    │  │ Funnel Worker Pod                          │  │
-   │  │  ├─ image: <registry>/funnel:tag  ← (1)   │  │
+   │  │  ├─ image: <registry>/funnel:tag  ← (1)    │  │
    │  │  └─ nerdctl pull <registry>/task:tag ← (2) │  │
    │  └────────────────────────────────────────────┘  │
    └──────────────────────────────────────────────────┘
@@ -823,163 +788,12 @@ This phase:
 - Choose the planned capacity based on expected image storage and concurrent task pulls.
 - For simple testing, `S` is normally sufficient; upgrade to `M` or `L` as your load grows.
 
-### Step 1: Create the Registry
+### Create the Registry
 
-**Via OVH Control Panel (recommended for first-time setup):**
+Plan (S/M/L) is fetched from `env.variables`. After creation, the registry url is stored in that same file.  Credentials are generated and set to allow access from workers. 
 
-1. Go to **OVHcloud Manager** → **Public Cloud** → your project
-2. Navigate to **Containers & Orchestration** → **Managed Private Registry**
-3. Click **Create a private registry**
-4. Select region: **GRA9** (same as your MKS cluster)
-5. Name: **tes-mpr**
-6. Plan: **S** (small — sufficient for most bioinformatics projects)
-7. Wait for status to change to **OK** (1-2 minutes)
 
-**Via OVH API (for automation):**
-
-```bash
-# Get available plans
-PLANS=$(curl -s \
-  -H "X-Ovh-Application: $OVH_APP_KEY" \
-  -H "X-Ovh-Consumer: $OVH_CONSUMER_KEY" \
-  -H "X-Ovh-Timestamp: $(date +%s)" \
-  -H "X-Ovh-Signature: ..." \
-  "https://eu.api.ovh.com/v1/cloud/project/${OVH_PROJECT_ID}/capabilities/containerRegistry")
-
-# Or using the OVH Python SDK (used in install-ovh-mks.sh):
-python3 << 'PYEOF'
-import ovh, json
-client = ovh.Client(endpoint='ovh-eu')
-plans = client.get(f"/cloud/project/{OVH_PROJECT_ID}/capabilities/containerRegistry")
-for p in plans:
-    print(f"  {p['name']} (id: {p['id']}) — {p['registryLimits']['imageStorage']} storage")
-PYEOF
-
-# Create the registry
-python3 << 'PYEOF'
-import ovh, json
-client = ovh.Client(endpoint='ovh-eu')
-result = client.post(f"/cloud/project/{OVH_PROJECT_ID}/containerRegistry",
-    name="tes-mpr",
-    region="GRA9",
-    planID="<plan-id-from-above>"  # S plan ID
-)
-print(json.dumps(result, indent=2))
-# Save result['id'] and result['url']
-PYEOF
-```
-
-### Step 2: Generate Credentials
-
-**Via OVH Control Panel:**
-
-1. In **Managed Private Registry**, find your registry (`tes-mpr`)
-2. Click the **`...`** menu → **Generate identification details**
-3. Click **Confirm**
-4. **Save the username and password** — the password is shown only once!
-
-**Via OVH API:**
-
-```bash
-python3 << 'PYEOF'
-import ovh, json
-client = ovh.Client(endpoint='ovh-eu')
-creds = client.post(f"/cloud/project/{OVH_PROJECT_ID}/containerRegistry/{REGISTRY_ID}/users",
-    email="tes-admin@example.com",
-    login="tes-admin"
-)
-print(f"Username: {creds['user']}")
-print(f"Password: {creds['password']}")  # Save this!
-PYEOF
-```
-
-> The registry URL will be in the format: `xxxxxxxx.gra9.container-registry.ovh.net`
-
-### Step 3: Create a Harbor Project
-
-After creation, access the **Harbor UI** at your registry URL:
-
-1. Open `https://xxxxxxxx.gra9.container-registry.ovh.net` in your browser
-2. Log in with the credentials from Step 2
-3. Click **New Project**
-4. Name: your namespace (e.g., `cmgantwerpen` or `tes-images`)
-5. Access level: **Private**
-6. Click **OK**
-
-### Step 4: Configure nerdctl Registry Auth on Worker Nodes
-
-Since Funnel uses `nerdctl` to pull task images, you need registry auth at the containerd/nerdctl level. This is done via a DaemonSet that writes Docker config to each worker node:
-
-```bash
-# Create a Kubernetes Secret with Docker registry credentials
-kubectl create secret docker-registry regcred \
-  -n funnel \
-  --docker-server=xxxxxxxx.gra9.container-registry.ovh.net \
-  --docker-username=tes-admin \
-  --docker-password='<password-from-step-2>'
-
-# Extract the Docker config JSON for nerdctl
-DOCKER_CONFIG=$(kubectl get secret regcred -n funnel \
-  -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d)
-
-# Create a ConfigMap with the Docker config for mounting into worker pods
-kubectl create configmap -n funnel docker-registry-config \
-  --from-literal=config.json="${DOCKER_CONFIG}"
-```
-
-Then, in the Funnel worker pod template, mount this config so nerdctl can use it:
-
-```yaml
-# Add to worker pod volumes:
-- name: docker-config
-  configMap:
-    name: docker-registry-config
-
-# Add to worker container volumeMounts:
-- name: docker-config
-  mountPath: /root/.docker
-  readOnly: true
-```
-
-**Alternative: DaemonSet approach** (writes auth to each node's host filesystem):
-
-```yaml
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: registry-auth-setup
-  namespace: funnel
-spec:
-  selector:
-    matchLabels:
-      app: registry-auth
-  template:
-    spec:
-      initContainers:
-      - name: setup-auth
-        image: busybox:latest
-        command:
-        - sh
-        - -c
-        - |
-          mkdir -p /host-docker-config/.docker
-          cat > /host-docker-config/.docker/config.json << 'EOF'
-          {"auths":{"xxxxxxxx.gra9.container-registry.ovh.net":{"auth":"<base64-user:pass>"}}}
-          EOF
-        volumeMounts:
-        - name: host-root
-          mountPath: /host-docker-config
-          subPath: root
-      containers:
-      - name: pause
-        image: registry.k8s.io/pause:3.9
-      volumes:
-      - name: host-root
-        hostPath:
-          path: /
-```
-
-### Step 5: Push Images to Your Registry
+### Push Images to Your Registry
 
 ```bash
 # 1. Login to your OVH registry (from your local machine)
@@ -999,11 +813,11 @@ docker push xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0
 
 ```
 xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0
-└────────────────────────────────────┘ └────────────┘ └──────┘ └──┘
-           Registry URL                  Project       Image   Tag
+└──────────────────────────────────────┘ └──────────┘ └─────┘ └──┘
+           Registry URL                     Project    Image   Tag
 ```
 
-### Step 6: Use Private Images in WDL Workflows
+### Use Private Images in WDL Workflows
 
 ```wdl
 task run_custom_analysis {
@@ -1028,20 +842,26 @@ task run_custom_analysis {
 ### Verification
 
 ```bash
-# 1. Check registry in OVHcloud Manager
+# Check registry in OVHcloud Manager
 #    Status should show "OK"
 
-# 2. Verify K8s secret exists
-kubectl get secret regcred -n funnel
+# Validate registry exists and is ready
+ovhcloud cloud container-registry list --cloud-project ${OVH_PROJECT_ID}
 
-# 3. Test docker login from your machine
+# Check Kubernetes Secret and ConfigMap
+kubectl -n ${TES_NAMESPACE} get secret regcred -o yaml
+kubectl -n ${TES_NAMESPACE} get configmap docker-registry-config -o yaml
+
+# Test docker login from your machine : use MPR_HARBOR_USER/PASS 
 docker login xxxxxxxx.gra9.container-registry.ovh.net
 
-# 4. Verify Harbor UI access
+# Verify Harbor UI access
 #    Open: https://xxxxxxxx.gra9.container-registry.ovh.net
 #    Should see your project and pushed images
 
-# 5. Test nerdctl pull from a worker node (via debug pod)
+
+
+# Test nerdctl pull from a worker node (via debug pod)
 kubectl run -n funnel nerdctl-test --rm -it \
   --image=xxxxxxxx.gra9.container-registry.ovh.net/cmgantwerpen/my-tool:v1.0 \
   --overrides='{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}' \
@@ -1049,37 +869,14 @@ kubectl run -n funnel nerdctl-test --rm -it \
   -- echo "Image pulled successfully!"
 ```
 
-### Important Notes
-
-⚠️ **nerdctl vs K8s image pulling**: Funnel uses nerdctl to pull task images on the host, not Kubernetes. K8s `imagePullSecrets` only affect the Funnel worker pod image itself, not task container images.
-
-⚠️ **Registry URL is unique**: Each registry gets a random hash prefix (e.g., `8093ff7x.gra5.container-registry.ovh.net`). Store this in `env.variables`.
-
-⚠️ **Credentials are sensitive**: Never commit passwords to git. Use K8s Secrets or environment variables.
-
-⚠️ **Harbor projects**: Images must be pushed to an existing Harbor project. Create one before pushing.
-
 ### Potential Issues
 
 - `docker login` fails on registry URL if username/password are incorrect
 - Task containers fail with `unauthorized: access denied` if `nerdctl` auth is missing in worker configmap
 - PR contains `registry not found` if `MPR_REGISTRY_URL` is misconfigured
 
-### Manual Verification
 
-```bash
-# Validate registry exists and is ready
-ovhcloud cloud container-registry list --cloud-project ${OVH_PROJECT_ID} | grep ${MPR_REGISTRY_NAME}
-
-# Check Kubernetes Secret and ConfigMap
-kubectl -n ${TES_NAMESPACE} get secret regcred -o yaml
-kubectl -n ${TES_NAMESPACE} get configmap docker-registry-config -o yaml
-
-# Pull a sample image via nerdctl in a debug worker pod
-kubectl debug node/<worker-node> --image=alpine -- sh -c 'nerdctl login --username ${MPR_HARBOR_USER} --password ${MPR_HARBOR_PASSWORD} ${MPR_REGISTRY_URL} && nerdctl pull ${MPR_REGISTRY_URL}/<org>/<image>:<tag>'
-```
-
-### ✅ Phase 4.5 Checklist
+### ✅ Phase 5 Checklist
 
 - [ ] Registry "tes-mpr" created in GRA9 and READY
 - [ ] Harbor credentials created and stored in env.variables
@@ -1090,7 +887,7 @@ kubectl debug node/<worker-node> --image=alpine -- sh -c 'nerdctl login --userna
 
 ---
 
-## Phase 5: Deploy Funnel TES
+## Phase 6: Deploy Funnel TES
 
 ### What Happens
 
@@ -1099,7 +896,7 @@ This phase:
 1. Creates **Funnel namespace** + RBAC
 2. Deploys **Funnel Server** (REST API, gRPC, task queue)
 3. Configures **nerdctl executor** for task container execution
-4. Sets up **Cinder auto-expansion** disk manager
+4. Sets up **Cinder auto-expansion** disk manager (daemonset)
 5. Exposes Funnel via **LoadBalancer service**
 
 ### Key Configuration
@@ -1119,16 +916,21 @@ Worker:
 
 **Funnel Worker pods** are created as Kubernetes Jobs with:
 
+- **DeamonSet**:
+  - `funnel-disk-monitor` : DaemonSet that does scratch setup & monitoring: 
+    - wait, mount & format LVM for /var/funnel-workon boot
+    - monitor disk usage : add disk => grow & extend FS
+  - `karpenter-node-overhead` : ghost DaemonSet to correct for system-reserved memory & cpu during scheduling
 - **init-containers**:
   - `wait-for-workdir`: polls for Cinder volume mount
   - `wait-for-nfs`: polls for NFS availability
 - **main container**: `funnel-worker` (runs the executor & task submission loop)
 
-### Execution
+### Expected Execution Output
 
 ```
 ============================================
- Phase 5: Deploy Funnel
+ Phase 6: Deploy Funnel
 ============================================
 
 Creating Funnel namespace + RBAC...
@@ -1169,11 +971,11 @@ kubectl get daemonset -n funnel
 # Check LoadBalancer external IP
 kubectl get svc -n funnel
 # NAME                 TYPE           CLUSTER-IP       EXTERNAL-IP      PORT(S)
-# funnel-server        LoadBalancer   10.0.1.234       51.68.237.8      8000:32000/TCP,9090:31234/TCP
+# funnel-lb            LoadBalancer   10.0.1.234       51.68.237.8      8000:32000/TCP,9090:31234/TCP
 # tes-service          ClusterIP      10.0.1.235       <none>           9090/TCP
 
 # Test Funnel API
-curl http://51.68.237.8:8000/v1/tasks
+curl http://${LB_ENDPOINT}/v1/tasks
 # Should return: {"tasks":[]}  (empty initially)
 ```
 
@@ -1183,71 +985,39 @@ curl http://51.68.237.8:8000/v1/tasks
 - LoadBalancer IP may be delayed by OVH network provisioning
 - `funnel-disk-setup` daemonset can fail if OpenStack credentials are invalid or `Cinder` volume provisioning fails
 
-### ✅ Phase 5 Checklist
+### ✅ Phase 6 Checklist
 
 - [ ] Funnel Server deployment is Ready
 - [ ] LoadBalancer service has an external IP
-- [ ] `funnel-disk-setup` DaemonSet is Running on all active nodes
-- [ ] `curl http://<LB_IP>:8000/v1/tasks` returns 200 JSON
+- [ ] `funnel-disk-setup` DaemonSet is Running on all worker nodes
+- [ ] `curl http://$LB_ENDPOINT/v1/tasks` returns 200 JSON
 
 ---
 
-## Phase 6: Configure Cromwell
+## Phase 7: Configure Cromwell
+
+### Cromwell version 
+
+I've created a pull request against the upstream repo with support for custom s3 endpoints and TES improvements (see [../pull-requests](Pull Requests)). While this PR is pending, use the JAR from [https://github.com/geertvandeweyer/cromwell/releases/tag/TES](my fork)  
 
 ### What Happens
 
-This phase prepares Cromwell for TES submission but doesn't deploy it (Cromwell is typically run locally on your machine):
+This phase prepares some configuration snippets for Cromwell for TES submission,  but doesn't deploy it (Cromwell is typically run locally on your machine):
 
 1. Generates **cromwell-tes.conf** (Cromwell ↔ Funnel TES config)
 2. Outputs **Cromwell startup command** for local execution
 
-### Execution
+### Expected Execution Output
 
 ```
 ============================================
- Phase 6: Cromwell configuration
+ Phase 7: Cromwell configuration
 ============================================
 
-Rendering Cromwell config from template...
-✅ cromwell-tes.conf generated
+Add the following to your cromwell-tes.conf : 
 
-Backend configuration:
-  - backend: tes
-  - tes_endpoint: http://51.68.237.8:8000
-  - root: s3://tes-tasks-c386d174c0974008bac7b36c4dfafb23-gra9/cromwell/
-  - nfs_root: /mnt/shared
+...
 
-S3 credentials:
-  - endpoint_url: https://s3.gra.io.cloud.ovh.net
-  - access_key: (from env)
-  - secret_key: (from env)
-```
-
-### Starting Cromwell (Manual Step)
-
-On your **local machine**:
-
-```bash
-cd OVH_installer/cromwell
-
-# Load OpenStack credentials (for display only, not used by Cromwell)
-source ../installer/openrc-tes-pilot.sh
-
-# Source environment variables
-source ../installer/env.variables
-
-# Start Cromwell server
-java -DLOG_LEVEL=INFO \
-  -Dconfig.file=cromwell-tes.conf \
-  -jar cromwell-93-0232cbd-SNAP.jar \
-  server > cromwell.log 2>&1 &
-
-echo "Cromwell starting... check cromwell.log"
-sleep 15
-
-# Verify it's running
-curl -s http://localhost:7900/api/workflows/v1 | python3 -m json.tool
-# Should return workflow list (empty)
 ```
 
 ### Configuration Details
@@ -1255,48 +1025,148 @@ curl -s http://localhost:7900/api/workflows/v1 | python3 -m json.tool
 **Key settings in `cromwell-tes.conf`:**
 
 ```hocon
+
+webservice {
+    interface = 0.0.0.0
+    # remember the port to connect afterwards
+    port = 7900
+    binding-timeout = 60s
+
+}
+
+
 backend {
   default = "tes"
   
   providers {
     tes {
-      actor-factory = "cromwell.backend.impl.tes.TesBackendFactory"
+      actor-factory = "cromwell.backend.impl.tes.TesBackendLifecycleActorFactory"
       config {
-        root = "s3://tes-tasks-c386d174c0974008bac7b36c4dfafb23-gra9/cromwell/"
+        root = "s3://tes-tasks-c386d174c0974008bac7b36c4dfafb23-gra9/cromwell/" # created bucket
         tes_endpoint = "http://51.68.237.8:8000"  # Funnel LoadBalancer
+
+        default-runtime-attributes {
+          cpu: 1
+          failOnStderr: false
+          continueOnReturnCode: 0
+          memory: "2 GB"
+          disk: "2 GB"  # arbitrary, scratch is autoscaled
+          memory_retry_multiplier: 1.5
+          # maximal retries of failed tasks (by cromwell)
+          maxRetries: 2 
+          # Default Kubernetes pod backoff limit (spot interruption / eviction retries).
+          # Passed to Funnel as backend_parameters["backoff_limit"].
+          # Override per-task in WDL: runtime { backoff_limit: "5" }
+          #  => These retries are not seen by cromwell. Total is maxRetries * backoff_limit
+          backoff_limit: "3"
+        }
+        # Enable TES 1.1 backend_parameters passthrough so runtime attributes
+        # (e.g. backoff_limit) are forwarded to Funnel as backend_parameters.
+        use_tes_11_preview_backend_parameters = true
+      
+        filesystems {
+          s3 {
+            auth = "default"
+            caching {
+                # reference uses original s3 location, BUT be aware if cleaning up while running subsequent calls !
+                duplication-strategy = "reference"
+                # Use S3 ETags for call-cache hashing (avoids downloading the file).
+                # Without this, Cromwell falls back to MD5 which S3 cannot provide,
+                # disabling call-caching for any S3-backed input file.
+                hashing-strategy = "etag"
+            }
+          }
+          ## NFS is seen as local
+          local {
+
+            # Mount point of the shared filesystem inside every TES worker container.
+            # Only paths under this root are treated as "already present" and excluded
+            # from TES input localisation. Backward-compat: legacy key `efs` also accepted.
+            # Examples: /mnt/shared (Manila NFS on OVH/K8s), /mnt/efs (AWS EFS)
+            local-root = "/mnt/shared"
+            caching {
+                # Avoid re-downloading / re-hashing files on shared FS: use a sibling .md5 file
+                # if present. Beware: .md5 siblings are NOT auto-removed on file changes.
+                check-sibling-md5: true
+            }
+          }
+        }
       }
     }
   }
 }
 
 filesystems {
+  # no reference to custom endpoins here
   s3 {
-    auth = "default"  # Uses AWS_* env vars
-    endpoint_url = "https://s3.gra.io.cloud.ovh.net"
+    class = "cromwell.filesystems.s3.S3PathBuilderFactory"
   }
-  
-  local.local-root = "/mnt/shared"  # NFS mount path
 }
+
+# engine filesystems allow cromwell itself to interact with data (eg read a file in a workflow run locally)
+engine {
+  filesystems {
+    local { 
+	enabled : true 
+    }
+    # no references to custom endpoint here
+    s3 {
+        auth = "default",
+        enabled = true,
+    	## at what size should we start using multipart uploads ?
+        MultipartThreshold = "4G",
+        ## multipart copying threads.
+        threads = 100,
+        # what is link between http.connections, s3.threads  and io-dispatcher.threads ? 
+        httpclient {
+            maxConnections = 1024
+        }
+    }
+  }
+}
+
+# root level 'aws' block contains the custom endpoints. 
+aws {
+
+  application-name = "cromwell"
+  auths = [
+    {
+      name = "default"
+      scheme = "custom_keys"
+      access-key = "OVH S3 KEY"
+      secret-key = "OVH S3 SECRET"
+    }
+  ]
+  region = "gra"
+  # OVH Object Storage S3-compatible endpoint (GRA region)
+  endpoint-url = "https://s3.gra.io.cloud.ovh.net"
+}
+
 ```
 
 ### Verification
 
+
 ```bash
-# Check Cromwell is accepting submissions
+# launch in server mode, check cromwell.log for startup problems: 
+java -DLOG_LEVEL=$LOG_LEVEL -Dconfig.file="$CROMWELL_CONFIG_OUT" -jar "$CROMWELL_BINARY" server > cromwell.log 2>&1 & 
+
+
+# Check Cromwell is accepting submissions on the configured port
 curl -s http://localhost:7900/api/workflows/v1 | python3 -m json.tool
 
-# Submit a test workflow (see Phase 7)
+# Submit a test workflow (see cromwell section)
 ```
 
 ### ✅ Phase 6 Checklist
 
-- [ ] cromwell-tes.conf is rendered with correct endpoints
-- [ ] Cromwell started successfully (check cromwell.log)
+- [ ] cromwell-tes.conf examples are rendered with correct endpoints
+- [ ] Cromwell can be started successfully (check cromwell.log)
 - [ ] Cromwell API responds at http://localhost:7900
 
 ---
 
-## Phase 7: Verification & Testing
+## Phase 8: Verification & Testing
 
 ### Smoke Test: Submit EfsTest Workflow
 
