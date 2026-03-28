@@ -62,7 +62,7 @@ OVHcloud (GRA9 Region, 1AZ)
 ## Documentation
 
 ### [Installation Guide](/ovh/installation-guide/)
-- 7-phase deployment walkthrough
+- 8-phase deployment walkthrough
 - Step-by-step instructions with verification
 - Network setup (vRack, private subnets)
 - Storage configuration (Manila NFS, Cinder volumes)
@@ -87,6 +87,12 @@ OVHcloud (GRA9 Region, 1AZ)
 - Quota requirements
 - Flavor recommendations
 - Scaling limits & optimization
+
+### [Installer Files](/ovh/installer-files/)
+- Complete bundle download
+- Individual script and template reference
+- YAML manifest descriptions
+- Funnel TES example tasks
 
 
 ---

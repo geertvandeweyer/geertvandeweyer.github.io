@@ -125,9 +125,8 @@ At higher throughput the baseline becomes negligible and the effective cost conv
 
 - **Scale-to-zero workers:** Karpenter removes idle worker nodes within minutes of task completion. You only pay for actual compute time, not standby capacity.
 - **MKS Free tier:** The free control plane (max 100 concurrent nodes) is sufficient for most bioinformatics workloads. Upgrading to Standard adds ~€70 / month for multi-AZ redundancy.
-- **Manila NFS free beta:** The 150 GB NFS share is currently free. Consider provisioning a larger share now while pricing is zero if scratch space becomes a bottleneck.
 - **S3 data lifecycle:** Enable OVH S3 lifecycle policies to auto-expire all intermediate files after analysis. Archive only final results (5 GB / sample) to the **Cold Archive** class in PAR (~€0.008/sample/month). Keeping the full 50 GB scratch data in Standard S3 would add ~€0.36/sample/month — a 45× overhead vs. cold-archiving results only.
 - **Egress is free:** Downloading analysis results (BAM, VCF, etc.) from S3 to your institution does not incur OVH charges in GRA.
 - **MPR plan selection:** The S plan (200 GB, ~€17.30 / month) is the dominant baseline cost item. It is flat-rate regardless of usage. If the image catalog stays small, this is sufficient; there is no pay-per-pull model.
-- **Block Storage cleanup:** Cinder volumes are LUKS-encrypted and auto-cleaned by Funnel after task completion. Verify cleanup is working to avoid orphaned volumes accumulating cost (High Speed Gen2: €0.000119/GiB/hr).
+- **Block Storage cleanup:** Cinder volumes are high speed, LUKS-encrypted and auto-cleaned by Funnel after task completion. Verify cleanup is working to avoid orphaned volumes accumulating cost (High Speed Gen2: €0.000119/GiB/hr).
 - **Savings Plans:** OVHcloud offers Savings Plans for predictable workloads (1–36 month commitment). The `d2-4` Savings Plan rate (1-month) is €0.0206/hr — a marginal saving over on-demand for a node running continuously.
