@@ -1,0 +1,12 @@
+# StorageClass for shared NFS volumes backed by OVH Manila File Storage.
+# Used for shared workflow input/output accessible by all worker pods (RWX).
+# Requires: csi-driver-manila installed in kube-system (see install script).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: manila-nfs
+provisioner: nfs.manila.csi.openstack.org
+parameters:
+  type: ${FILE_STORAGE_SHARE_TYPE}  # optional, defaults to 'default' if not set
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

@@ -1,0 +1,20 @@
+{
+  "name": "disk-write-test",
+  "description": "Writes 5GB to the task workdir (/tmp inside container → /var/funnel-work on host). Used to verify Cinder disk is used (not root /dev/sda1) and that the disk autoscaler is tracking usage correctly.",
+  "resources": {
+    "cpu_cores": 1,
+    "ram_gb": 0.25,
+    "disk_gb": 10.0
+  },
+  "executors": [
+    {
+      "image": "alpine:3.19",
+      "command": [
+        "/bin/sh", "-c",
+        "echo '[disk-write-test] Writing 5GB to /tmp/bigfile...' && dd if=/dev/zero of=/tmp/bigfile bs=1M count=5120 && echo '[disk-write-test] Write done.' && df -h /tmp && sleep 30 && echo '[disk-write-test] Removing file...' && rm /tmp/bigfile && echo '[disk-write-test] Done.'"
+      ],
+      "workdir": "/tmp"
+    }
+  ],
+  "volumes": ["/tmp"]
+}

@@ -1,0 +1,294 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: funnel-config
+  namespace: ${TES_NAMESPACE}
+data:
+  funnel.yaml: |
+    Database: boltdb
+    Compute: kubernetes
+
+    Server:
+      HTTPPort: "8000"
+      RPCPort: "9090"
+
+    BoltDB:
+      Path: /data/funnel.db
+
+    Worker:
+      WorkDir: /tmp/funnel-work-dir
+
+    Kubernetes:
+      Executor: kubernetes
+      ServiceAccount: funnel
+      Namespace: ${TES_NAMESPACE}
+      DisableReconciler: false
+      ReconcileRate: "600s"
+      WorkerTemplate: |
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: {{.TaskId}}
+          namespace: ${TES_NAMESPACE}
+          labels:
+            app: funnel-worker
+            task-id: {{.TaskId}}
+            task-name: {{.TaskNameLabel}}
+        spec:
+          ttlSecondsAfterFinished: 300
+          backoffLimit: {{.BackoffLimit}}
+          completions: 1
+          template:
+            metadata:
+              labels:
+                app: funnel-worker
+                task-id: {{.TaskId}}
+                task-name: {{.TaskNameLabel}}
+            spec:
+              # Cluster Autoscaler picks the cheapest workers-* pool that fits
+              # the pod's resource request. nodepool=workers label ensures workers
+              # never land on the system node.
+              nodeSelector:
+                kubernetes.io/arch: amd64
+                karpenter.sh/nodepool: workers
+              serviceAccountName: funnel
+              hostPID: true
+              restartPolicy: Never
+              # Wait for the disk-monitor DaemonSet to finish mounting the Cinder
+              # volume at /var/funnel-work before the Funnel worker starts.
+              # Without this, tasks arriving on a freshly-provisioned node would
+              # write to the provisioned root disk instead of the Cinder volume.
+              # Strategy: compare the device-id of /var/funnel-work against /.
+              # They differ as soon as the Cinder volume is bind-mounted there.
+              initContainers:
+              - name: wait-for-workdir
+                image: busybox:latest
+                # privileged: needed to write /proc/sysrq-trigger to power off the
+                # host node on Cinder mount failure, so Karpenter provisions a replacement.
+                securityContext:
+                  privileged: true
+                command: ['/bin/sh', '-c']
+                args:
+                - |
+                  i=0
+                  until [ -f /var/funnel-work/.cinder-mounted ]; do
+                    i=$((i+1))
+                    if [ $i -ge 60 ]; then
+                      echo "FATAL: Cinder volume not mounted at /var/funnel-work after 10 min."
+                      echo "Powering off node so Karpenter can provision a replacement."
+                      echo 1 > /proc/sys/kernel/sysrq
+                      echo o > /proc/sysrq-trigger
+                      sleep 30  # wait for power-off; fallback exit to fail the pod
+                      exit 1
+                    fi
+                    echo "  poll $i/60: Cinder not mounted yet. Sleeping 10s..."
+                    sleep 10
+                  done
+                  echo "/var/funnel-work is ready (sentinel present)."
+                volumeMounts:
+                - name: work-dir
+                  mountPath: /var/funnel-work
+                  mountPropagation: HostToContainer
+              # Wait for the funnel-disk-setup DaemonSet's holder container to mount
+              # Manila NFS on the HOST at ${NFS_MOUNT_PATH}.  The DaemonSet is the SOLE
+              # owner of the mount — it mounts once per node and keeps it alive with a
+              # periodic keepalive touch.  Task pods never mount/unmount — that would be
+              # unsafe for parallel tasks sharing the same node.
+              # The hostPath shared-nfs volume + HostToContainer propagation makes the
+              # host-level NFS mount visible in this container as a real mountpoint.
+              - name: wait-for-nfs
+                image: busybox:latest
+                # privileged: needed to write /proc/sysrq-trigger to power off the
+                # host node on NFS mount failure, so Karpenter provisions a replacement.
+                securityContext:
+                  privileged: true
+                command: ['/bin/sh', '-c']
+                args:
+                - |
+                  i=0
+                  until mountpoint -q ${NFS_MOUNT_PATH} && timeout 5 ls ${NFS_MOUNT_PATH} >/dev/null 2>&1; do
+                    i=$((i+1))
+                    if [ $i -ge 60 ]; then
+                      echo "FATAL: NFS not available at ${NFS_MOUNT_PATH} after 10 min."
+                      echo "Powering off node so Karpenter can provision a replacement."
+                      echo 1 > /proc/sys/kernel/sysrq
+                      echo o > /proc/sysrq-trigger
+                      sleep 30  # wait for power-off; fallback exit to fail the pod
+                      exit 1
+                    fi
+                    echo "  poll $i/60: waiting for NFS at ${NFS_MOUNT_PATH}..."
+                    sleep 10
+                  done
+                  echo "NFS healthy at ${NFS_MOUNT_PATH} — proceeding."
+                volumeMounts:
+                - name: shared-nfs
+                  mountPath: ${NFS_MOUNT_PATH}
+                  mountPropagation: HostToContainer
+              # Pull Funnel worker image from private registry (if configured)
+              imagePullSecrets:
+              - name: regcred
+              containers:
+              - name: funnel-worker-{{.TaskId}}
+                image: ${FUNNEL_IMAGE}
+                imagePullPolicy: Always
+                securityContext:
+                  privileged: true
+                args:
+                  - "worker"
+                  - "run"
+                  - "--config"
+                  - "/etc/config/funnel-worker.yaml"
+                  - "--taskID"
+                  - {{.TaskId}}
+                resources:
+                  requests:
+                    cpu: {{if ne .Cpus 0}}{{.Cpus}}{{else}}"100m"{{end}}
+                    memory: {{if ne .RamGb 0.0}}{{printf "\"%.0fG\"" .RamGb}}{{else}}"256M"{{end}}
+                  limits:
+                    cpu: {{if ne .Cpus 0}}{{.Cpus}}{{else}}"100m"{{end}}
+                    memory: {{if ne .RamGb 0.0}}{{printf "\"%.0fG\"" .RamGb}}{{else}}"256M"{{end}}
+                env:
+                  # OVH S3 credentials
+                  - name: AWS_ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: ovh-s3-credentials
+                        key: s3_access_key
+                  - name: AWS_SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: ovh-s3-credentials
+                        key: s3_secret_key
+                  - name: AWS_REGION
+                    value: "${OVH_S3_REGION}"
+                  - name: AWS_DEFAULT_REGION
+                    value: "${OVH_S3_REGION}"
+                  # Bucket access policy (used by workflow tools / task scripts)
+                  # READ_BUCKETS="*" allows reading any bucket.
+                  # WRITE_BUCKETS is restricted to the TES bucket only.
+                  - name: READ_BUCKETS
+                    value: "${READ_BUCKETS}"
+                  - name: WRITE_BUCKETS
+                    value: "${WRITE_BUCKETS}"
+                volumeMounts:
+                - name: config-volume
+                  mountPath: /etc/config
+                - name: work-dir
+                  mountPath: /var/funnel-work
+                  # HostToContainer propagates the Cinder disk mount from the host
+                  # into the worker pod so nerdctl bind-mounts land on the Cinder volume.
+                  mountPropagation: HostToContainer
+                # Shared NFS — same filesystem accessible by all workers and task containers.
+                # Path MUST match NFS_MOUNT_PATH in env.variables AND local-root in cromwell-tes.conf.
+                # HostToContainer propagates the host-level NFS mount (owned by funnel-disk-setup
+                # DaemonSet holder) into this container and into nerdctl task containers.
+                - name: shared-nfs
+                  mountPath: ${NFS_MOUNT_PATH}
+                  mountPropagation: HostToContainer
+                - name: containerd-socket
+                  mountPath: /run/containerd
+                - name: containerd-data
+                  mountPath: /var/lib/containerd
+                - name: nerdctl-data
+                  mountPath: /var/lib/nerdctl
+                # Docker/nerdctl auth config for pulling task images from private registry
+                - name: docker-registry-auth
+                  mountPath: /root/.docker
+                  readOnly: true
+              volumes:
+              - name: config-volume
+                configMap:
+                  name: funnel-config
+              - name: work-dir
+                hostPath:
+                  path: /var/funnel-work
+                  type: DirectoryOrCreate
+              - name: containerd-socket
+                hostPath:
+                  path: /run/containerd
+                  type: Directory
+              - name: containerd-data
+                hostPath:
+                  path: /var/lib/containerd
+                  type: Directory
+              - name: nerdctl-data
+                hostPath:
+                  path: /var/lib/nerdctl
+                  type: DirectoryOrCreate
+              # Docker config with private registry auth for nerdctl image pulls.
+              # Created by Phase 4.5 / Phase 5 of the installer; optional so that
+              # clusters without a private registry still function.
+              - name: docker-registry-auth
+                configMap:
+                  name: docker-registry-config
+                  optional: true
+                  items:
+                  - key: config.json
+                    path: config.json
+              # Shared NFS — hostPath so nerdctl/runc (running in host mount namespace)
+              # can bind-mount it into task containers.  The funnel-disk-setup DaemonSet
+              # holder mounts Manila NFS here and keeps it alive; task pods only read it.
+              - name: shared-nfs
+                hostPath:
+                  path: ${NFS_MOUNT_PATH}
+                  type: DirectoryOrCreate
+      PVTemplate: |
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: "pv-{{.TaskId}}"
+          namespace: "${TES_NAMESPACE}"
+        spec:
+          capacity:
+            storage: 10Gi
+          accessModes:
+            - ReadWriteOnce
+          persistentVolumeReclaimPolicy: Delete
+          hostPath:
+            path: /var/funnel-work
+            type: Directory
+          claimRef:
+            name: "funnel-pvc-{{.TaskId}}"
+            namespace: "${TES_NAMESPACE}"
+      PVCTemplate: |
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: "funnel-pvc-{{.TaskId}}"
+          namespace: "${TES_NAMESPACE}"
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          volumeName: "pv-{{.TaskId}}"
+  funnel-worker.yaml: |
+    Database: boltdb
+
+    BoltDB:
+      Path: /tmp/funnel.db
+
+    RPCClient:
+      ServerAddress: "tes-service:9090"
+
+    Worker:
+      WorkDir: /var/funnel-work
+      Container:
+        DriverCommand: "nerdctl"
+        # IMPORTANT: --volume ${NFS_MOUNT_PATH}:${NFS_MOUNT_PATH}:rw passes the Manila NFS share
+        # (mounted on the worker pod) into every nerdctl task container.
+        # THIS PATH MUST MATCH NFS_MOUNT_PATH in env.variables AND local-root in cromwell-tes.conf.
+        RunCommand: "run -i --net=host {{if .RemoveContainer}}--rm{{end}} {{range __DOLLAR__k, __DOLLAR__v := .Env}}--env {{__DOLLAR__k}}={{__DOLLAR__v}} {{end}} --env READ_BUCKETS=${READ_BUCKETS} --env WRITE_BUCKETS=${WRITE_BUCKETS} {{if .Name}}--name {{.Name}}{{end}} {{if .Workdir}}--workdir {{.Workdir}}{{end}} {{range .Volumes}}--volume {{.HostPath}}:{{.ContainerPath}}:{{if .Readonly}}ro{{else}}rw{{end}} {{end}} --volume ${NFS_MOUNT_PATH}:${NFS_MOUNT_PATH}:rw {{.Image}} {{.Command}}"
+        PullCommand: "pull {{.Image}}"
+        StopCommand: "rm -f {{.Name}}"
+
+    Kubernetes:
+      Executor: nerdctl
+      Namespace: ${TES_NAMESPACE}
+
+    AmazonS3:
+      Disabled: false
+      # OVH S3-compatible endpoint — credentials come from env vars above
+      Endpoint: ${OVH_S3_ENDPOINT}
+      Region: ${OVH_S3_REGION}

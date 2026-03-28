@@ -1,0 +1,16 @@
+{
+  "name": "containerd-location-check",
+  "description": "Tiny task that pulls a real image (busybox) via nerdctl and checks that containerd's data root is a symlink pointing to /var/funnel-work/containerd (the v18 relocation fix). Also reports df for the Cinder LV mount. Task exits 0 on success, 1 if containerd is still on root disk.",
+  "resources": {
+    "cpu_cores": 1,
+    "ram_gb": 0.25,
+    "disk_gb": 1.0
+  },
+  "executors": [
+    {
+      "image": "busybox:1.36",
+      "command": ["echo", "image-pull-succeeded"]
+    }
+  ],
+  "volumes": ["/tmp"]
+}

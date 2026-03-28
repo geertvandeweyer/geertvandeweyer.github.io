@@ -1,0 +1,53 @@
+# Persistent storage for the shared Manila NFS filesystem.
+# Access path: Manila share → PV (static) → PVC (RWX) → Funnel server pod + every worker pod
+#              → nerdctl passes /mnt/shared into task containers via --volume /mnt/shared:/mnt/shared
+#
+# MANILA_SHARE_ID  + MANILA_ACCESS_ID are captured by the installer in Phase 3
+# and persisted to env.variables.  envsubst expands them here before kubectl apply.
+#
+# To check the mount inside a running worker:
+#   kubectl exec -n ${TES_NAMESPACE} <worker-pod> -- ls /mnt/shared
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: manila-shared-pv
+spec:
+  capacity:
+    storage: ${FILE_STORAGE_SIZE}Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - intr
+  csi:
+    driver: nfs.manila.csi.openstack.org
+    # volumeHandle must be unique across the cluster — use the share name as stable ID
+    volumeHandle: manila-shared-pv
+    volumeAttributes:
+      # Unqualified keys required by Manila CSI v1.30+; the old
+      # nfs.manila.csi.openstack.org/ prefix is no longer accepted.
+      shareID: "${MANILA_SHARE_ID}"
+      shareAccessIDs: "${MANILA_ACCESS_ID}"
+    # Manila CSI's NodePublishVolume validates that secrets are non-empty;
+    # without this ref the kubelet passes no secrets and the mount fails.
+    nodePublishSecretRef:
+      name: manila-csi-secrets
+      namespace: kube-system
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: manila-shared-pvc
+  namespace: ${TES_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  # storageClassName "" + explicit volumeName = static binding (no dynamic provisioner)
+  storageClassName: ""
+  resources:
+    requests:
+      storage: ${FILE_STORAGE_SIZE}Gi
+  volumeName: manila-shared-pv

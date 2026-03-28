@@ -1,0 +1,23 @@
+{
+  "name": "${POOL_NAME}",
+  "flavorName": "${POOL_FLAVOR}",
+  "desiredNodes": ${POOL_DESIRED},
+  "minNodes": ${POOL_MIN},
+  "maxNodes": ${POOL_MAX},
+  "autoscale": ${POOL_AUTOSCALE},
+  "template": {
+    "metadata": {
+      "annotations": {
+        "managed-by": "funnel-installer"
+      },
+      "finalizers": [],
+      "labels": {
+        "nodepool": "${POOL_LABEL}"
+      }
+    },
+    "spec": {
+      "unschedulable": false,
+      "taints": []
+    }
+  }
+}

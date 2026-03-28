@@ -1,0 +1,501 @@
+# Disk auto-expander for /var/funnel-work on worker nodes.
+#
+# Architecture (no LVM, no OpenStack credentials needed):
+#
+#   init container "pvc-and-trigger" (bitnami/kubectl):
+#     1. Creates a per-node Cinder PVC "funnel-work-<node>" (StorageClass:
+#        funnel-work-block, plain ext4, reclaimPolicy: Retain).
+#     2. Creates a "mount-holder" pod on THIS node that keeps the PVC mounted.
+#        This triggers the Cinder CSI driver to attach the block device to the
+#        VM (ControllerPublishVolume + NodeStageVolume). The holder pod must
+#        stay Running for:
+#          a) the block device to remain attached (visible as /dev/vdX on host)
+#          b) CSI NodeExpandVolume (resize2fs) to fire when PVC is patched
+#     3. Waits for holder pod Running, then writes the Cinder volume UUID to
+#        /shared/vol-uuid for the next init container.
+#
+#   init container "host-mount" (ubuntu:22.04, privileged, hostPID):
+#     4. Installs e2fsprogs (mkfs.ext4).
+#     5. Finds the block device by matching the Cinder volume UUID serial prefix
+#        in lsblk output (OVH virtio-blk sets disk serial = volume UUID prefix).
+#     6. Formats the device as ext4 if no filesystem is present (fresh volume).
+#     7. Mounts the device at /var/funnel-work in the HOST mount namespace via
+#        nsenter -t 1 -m -- mount /dev/vdX /var/funnel-work.
+#        Adds an fstab entry (nofail) so the mount survives node reboots.
+#
+#   monitor container (bitnami/kubectl, hostPath /var/funnel-work):
+#     8. Polls df /var/funnel-work every WORK_DIR_POLL_INTERVAL_SEC seconds.
+#        Expands when BOTH are true (AND logic):
+#          - Used% >= WORK_DIR_EXPAND_THRESHOLD  (default 80%)
+#          - Free  <  WORK_DIR_MIN_FREE_GB        (default 75 GB)
+#        On threshold: patches PVC storage request (+WORK_DIR_EXPAND_GB).
+#        Cinder CSI controller enlarges the Cinder volume, then the CSI node
+#        plugin calls resize2fs via NodeExpandVolume -- no nsenter, no restart.
+#
+# Funnel worker pods continue to use hostPath: /var/funnel-work unchanged.
+# No OpenStack application credentials are required.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: disk-monitor
+  namespace: ${TES_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: funnel-disk-monitor
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "patch"]
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: funnel-disk-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: funnel-disk-monitor
+subjects:
+- kind: ServiceAccount
+  name: disk-monitor
+  namespace: ${TES_NAMESPACE}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: funnel-disk-monitor
+  namespace: ${TES_NAMESPACE}
+  labels:
+    app: funnel-disk-monitor
+spec:
+  selector:
+    matchLabels:
+      app: funnel-disk-monitor
+  template:
+    metadata:
+      labels:
+        app: funnel-disk-monitor
+    spec:
+      serviceAccountName: disk-monitor
+      nodeSelector:
+        karpenter.sh/nodepool: workers
+      tolerations:
+      - operator: "Exists"
+      # hostPID: required for nsenter -t 1 (enter host mount namespace)
+      hostPID: true
+      volumes:
+      # Shared scratch between init containers (vol-uuid file)
+      - name: shared
+        emptyDir: {}
+      # Monitor watches /var/funnel-work directly on the host
+      - name: workdir
+        hostPath:
+          path: /var/funnel-work
+          type: DirectoryOrCreate
+
+      initContainers:
+      # Phase 1: create PVC + mount-holder pod, wait for block device to appear
+      - name: pvc-and-trigger
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          NODE="${NODE_NAME}"
+          PVC="funnel-work-${NODE}"
+          HOLDER="funnel-mount-holder-${NODE}"
+          NS="${TES_NAMESPACE}"
+          INIT_GB="${WORK_DIR_INITIAL_GB:-100}"
+          SC="funnel-work-block"
+
+          # 1. Create PVC if it does not exist yet
+          if ! kubectl get pvc "$PVC" -n "$NS" >/dev/null 2>&1; then
+            echo "[pvc] Creating PVC $PVC (${INIT_GB}Gi, StorageClass=$SC)..."
+            cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: "${PVC}"
+            namespace: "${NS}"
+            labels:
+              app: funnel-disk-monitor
+              node: "${NODE}"
+          spec:
+            accessModes: [ReadWriteOnce]
+            storageClassName: "${SC}"
+            resources:
+              requests:
+                storage: "${INIT_GB}Gi"
+          EOF
+          else
+            echo "[pvc] PVC $PVC already exists."
+          fi
+
+          # 1b. Annotate PVC with selected-node so the CSI provisioner knows
+          #     which availability zone to provision the Cinder volume in.
+          #     This is necessary because the mount-holder pod uses nodeName
+          #     (bypassing the scheduler), so the scheduler never sets this
+          #     annotation automatically.
+          kubectl -n "$NS" annotate pvc "$PVC" \
+            volume.kubernetes.io/selected-node="$NODE" --overwrite
+          echo "[pvc] Annotated PVC $PVC with selected-node=$NODE"
+
+          # 2. Create the mount-holder pod if it does not exist.
+          #    This pod declares the PVC as a volume, triggering the Cinder CSI
+          #    driver to attach the block device to this VM.
+          #    The pod must stay Running for:
+          #      a) the block device to remain attached on the host
+          #      b) CSI NodeExpandVolume (resize2fs) to fire on PVC patch
+          if ! kubectl get pod "$HOLDER" -n "$NS" >/dev/null 2>&1; then
+            echo "[pvc] Creating mount-holder pod $HOLDER on node $NODE..."
+            cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: "${HOLDER}"
+            namespace: "${NS}"
+            labels:
+              app: funnel-mount-holder
+              node: "${NODE}"
+          spec:
+            nodeName: "${NODE}"
+            restartPolicy: Always
+            tolerations:
+            - operator: "Exists"
+            containers:
+            - name: holder
+              image: busybox:1.36
+              command: ["sleep", "infinity"]
+              resources:
+                requests:
+                  memory: 32Mi
+                limits:
+                  memory: 64Mi
+              volumeMounts:
+              - name: work
+                mountPath: /mnt/work
+            volumes:
+            - name: work
+              persistentVolumeClaim:
+                claimName: "${PVC}"
+          EOF
+          else
+            echo "[pvc] Mount-holder pod $HOLDER already exists."
+          fi
+
+          # 3. Wait for holder pod Running (= Cinder volume attached, /dev/vdX visible)
+          echo "[pvc] Waiting for mount-holder pod $HOLDER to be Running (up to 10 min)..."
+          STATUS="Unknown"
+          for i in $(seq 1 60); do
+            STATUS=$(kubectl get pod "$HOLDER" -n "$NS" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            echo "  [${i}/60] $HOLDER status: $STATUS"
+            [ "$STATUS" = "Running" ] && break
+            sleep 10
+          done
+          if [ "$STATUS" != "Running" ]; then
+            echo "ERROR: mount-holder pod did not reach Running within 10 minutes."
+            kubectl describe pod "$HOLDER" -n "$NS" 2>/dev/null || true
+            exit 1
+          fi
+
+          # 4. Extract Cinder volume UUID for block device discovery
+          PV_NAME=$(kubectl get pvc "$PVC" -n "$NS" \
+            -o jsonpath='{.spec.volumeName}' 2>/dev/null)
+          VOL_UUID=$(kubectl get pv "$PV_NAME" \
+            -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null)
+          echo "[pvc] Cinder volume UUID: $VOL_UUID"
+          echo "$VOL_UUID" > /shared/vol-uuid
+          echo "[pvc] Phase 1 complete."
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: TES_NAMESPACE
+          value: "${TES_NAMESPACE}"
+        - name: WORK_DIR_INITIAL_GB
+          value: "${WORK_DIR_INITIAL_GB}"
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+
+      # Phase 2: format (if fresh) + mount block device on HOST via nsenter
+      - name: host-mount
+        image: ubuntu:22.04
+        securityContext:
+          privileged: true   # required for mkfs + nsenter mount
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -eu
+          # e2fsprogs provides mkfs.ext4; util-linux (lsblk, blkid, nsenter) is pre-installed.
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends e2fsprogs 2>/dev/null
+
+          VOL_UUID=$(cat /shared/vol-uuid)
+          # OVH virtio-blk sets the disk serial to the first 20 hex chars of the
+          # Cinder volume UUID (dashes stripped).
+          SERIAL=$(echo "$VOL_UUID" | tr -d '-' | cut -c1-20)
+          echo "[mount] Searching for block device with serial prefix: $SERIAL"
+          echo "[mount] Cinder volume UUID: $VOL_UUID"
+
+          DEVICE=""
+          for attempt in $(seq 1 30); do
+            # Method 1: /dev/disk/by-id/virtio-<serial> in HOST mount namespace
+            BYID_MATCH=$(nsenter -t 1 -m -- ls /dev/disk/by-id/ 2>/dev/null \
+              | grep -i "$SERIAL" | head -1 || true)
+            if [ -n "$BYID_MATCH" ]; then
+              DEVICE=$(nsenter -t 1 -m -- readlink -f "/dev/disk/by-id/$BYID_MATCH")
+              echo "  [${attempt}/30] Found via by-id: $BYID_MATCH -> $DEVICE"
+              break
+            fi
+            # Method 2: lsblk SERIAL column
+            DEVICE=$(lsblk -rno NAME,SERIAL 2>/dev/null \
+              | grep -i "$SERIAL" \
+              | awk '{print "/dev/"$1}' \
+              | head -1 || true)
+            [ -n "$DEVICE" ] && { echo "  [${attempt}/30] Found via lsblk SERIAL: $DEVICE"; break; }
+            # Method 3: lsblk WWN column
+            DEVICE=$(lsblk -rno NAME,WWN 2>/dev/null \
+              | grep -i "$(echo $SERIAL | cut -c1-16)" \
+              | awk '{print "/dev/"$1}' \
+              | head -1 || true)
+            [ -n "$DEVICE" ] && { echo "  [${attempt}/30] Found via lsblk WWN: $DEVICE"; break; }
+            echo "  [${attempt}/30] Device not yet visible -- retrying in 2s..."
+            sleep 2
+          done
+
+          # Method 4 (fallback): find the largest non-partition disk > 60 GiB
+          # On OVH c3-4: root sda≈50GB, Cinder volume sdb≈100GB
+          if [ -z "$DEVICE" ]; then
+            echo "[mount] Serial-based detection failed. Using size-based fallback..."
+            # -b = bytes, avoids unit-string parsing ambiguity
+            DEVICE=$(lsblk -rnb -o NAME,TYPE,SIZE \
+              | awk '$2=="disk" && $3+0 > 60*1024*1024*1024 {print "/dev/"$1}' \
+              | head -1 || true)
+            if [ -n "$DEVICE" ]; then
+              echo "[mount] Fallback: detected non-root disk $DEVICE"
+            fi
+          fi
+
+          if [ -z "$DEVICE" ]; then
+            echo "ERROR: block device for Cinder volume $VOL_UUID not found."
+            echo "DEBUG lsblk:"; lsblk -o NAME,SIZE,SERIAL,WWN,TYPE 2>/dev/null || true
+            echo "DEBUG by-id (host):"; nsenter -t 1 -m -- ls -la /dev/disk/by-id/ 2>/dev/null || true
+            exit 1
+          fi
+          echo "[mount] Found block device: $DEVICE"
+
+          # Format only if the device has no filesystem (brand-new volume)
+          if blkid "$DEVICE" 2>/dev/null | grep -q TYPE; then
+            echo "[mount] Filesystem already present on $DEVICE -- skipping mkfs."
+          else
+            echo "[mount] No filesystem detected -- formatting $DEVICE as ext4..."
+            mkfs.ext4 -F -m 1 "$DEVICE"
+          fi
+
+          # Mount at /var/funnel-work in the HOST mount namespace
+          if nsenter -t 1 -m -- mountpoint -q /var/funnel-work 2>/dev/null; then
+            echo "[mount] /var/funnel-work already mounted on host -- skipping."
+          else
+            nsenter -t 1 -m -- mkdir -p /var/funnel-work
+            nsenter -t 1 -m -- mount "$DEVICE" /var/funnel-work
+            # Persist across node reboots (nofail: node boots even if disk absent)
+            nsenter -t 1 -m -- bash -c \
+              "grep -q funnel-work /etc/fstab || \
+               echo '${DEVICE} /var/funnel-work ext4 defaults,nofail 0 2' >> /etc/fstab"
+            echo "[mount] Mounted and persisted in /etc/fstab."
+          fi
+          # Write sentinel so the wait-for-workdir init container in task pods
+          # can reliably detect the Cinder volume is live (device-ID comparison
+          # is unreliable inside containers due to overlayfs).
+          nsenter -t 1 -m -- touch /var/funnel-work/.cinder-mounted
+          echo "[mount] Sentinel written: /var/funnel-work/.cinder-mounted"
+          echo "[mount] Phase 2 complete."
+          nsenter -t 1 -m -- df -h /var/funnel-work 2>/dev/null || true
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+
+      containers:
+      # Monitor: poll df, patch PVC when near-full (CSI handles resize + resize2fs)
+      - name: monitor
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          NODE="${NODE_NAME}"
+          PVC="funnel-work-${NODE}"
+          NS="${TES_NAMESPACE}"
+          EXPAND_GB="${WORK_DIR_EXPAND_GB:-100}"
+          THRESHOLD_PCT="${WORK_DIR_EXPAND_THRESHOLD:-80}"
+          MIN_FREE_GB="${WORK_DIR_MIN_FREE_GB:-75}"
+          POLL_SEC="${WORK_DIR_POLL_INTERVAL_SEC:-30}"
+          COOLDOWN_SEC="${WORK_DIR_EXPAND_COOLDOWN_SEC:-600}"
+          WORKDIR="/var/funnel-work"
+
+          echo "Disk monitor started on node $NODE"
+          echo "  Watching  : $WORKDIR (hostPath -- Cinder PVC $PVC)"
+          echo "  Expand if : used% >= ${THRESHOLD_PCT}%  AND  free < ${MIN_FREE_GB} GB"
+          echo "  Expand by : ${EXPAND_GB} GB per step  |  Cooldown: ${COOLDOWN_SEC}s  |  Poll every: ${POLL_SEC}s"
+
+          # Cooldown: don't re-expand until SCSI rescan + resize2fs have time to complete
+          LAST_EXPAND_TIME=0
+          # Idle cleanup: auto-cordon after N consecutive idle polls so Karpenter WhenEmpty fires
+          IDLE_POLLS=0
+          IDLE_BEFORE_CORDON=3  # N x POLL_SEC seconds of no workers before cordoning
+
+          while true; do
+            sleep "$POLL_SEC"
+
+            read -r AVAIL_GB PCT_USED <<< "$(df -BG "$WORKDIR" 2>/dev/null \
+              | awk 'NR==2 { gsub(/G/,"",$4); gsub(/%/,"",$5); print $4, $5 }')"
+            if [ -z "${AVAIL_GB:-}" ]; then
+              echo "[monitor] $WORKDIR not yet available -- waiting..."
+              continue
+            fi
+
+            echo "[$(date -u +%H:%M:%S)] $WORKDIR -- used: ${PCT_USED}%  free: ${AVAIL_GB} GB"
+
+            # --- Disk expansion (with cooldown to wait for SCSI rescan + resize2fs) ---
+            NOW=$(date +%s)
+            SINCE_EXPAND=$(( NOW - LAST_EXPAND_TIME ))
+            if [ "$PCT_USED" -ge "$THRESHOLD_PCT" ] && [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
+              if [ "$SINCE_EXPAND" -lt "$COOLDOWN_SEC" ]; then
+                echo "[monitor] Thresholds crossed but in cooldown (${SINCE_EXPAND}s / ${COOLDOWN_SEC}s) -- waiting for rescan+resize2fs"
+              else
+                echo "[monitor] Both thresholds crossed -- expanding PVC $PVC by ${EXPAND_GB} GB..."
+
+                CURRENT=$(kubectl get pvc "$PVC" -n "$NS" \
+                  -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null)
+                CURRENT_NUM="${CURRENT%Gi}"
+                NEW_NUM=$((CURRENT_NUM + EXPAND_GB))
+                NEW_SIZE="${NEW_NUM}Gi"
+
+                echo "[monitor] Patching PVC: $CURRENT -> $NEW_SIZE"
+                kubectl patch pvc "$PVC" -n "$NS" \
+                  --type='json' \
+                  -p="[{\"op\":\"replace\",\"path\":\"/spec/resources/requests/storage\",\"value\":\"${NEW_SIZE}\"}]"
+                echo "[monitor] PVC patched to $NEW_SIZE. The resizer sidecar will rescan the block device and run resize2fs."
+                LAST_EXPAND_TIME=$NOW
+              fi
+            fi
+
+            # --- Idle node cleanup: cordon + remove mount-holder so Karpenter WhenEmpty consolidates ---
+            WORKER_COUNT=$(kubectl get pods -n "$NS" \
+              --field-selector "spec.nodeName=${NODE}" \
+              --no-headers 2>/dev/null \
+              | grep -v 'Succeeded\|Failed\|Completed\|funnel-disk-monitor\|funnel-mount-holder' \
+              | wc -l 2>/dev/null || echo 0)
+            WORKER_COUNT=$(echo "$WORKER_COUNT" | tr -d ' ')
+            if [ "${WORKER_COUNT:-0}" -gt 0 ]; then
+              IDLE_POLLS=0
+            else
+              IDLE_POLLS=$((IDLE_POLLS + 1))
+            fi
+
+            if [ "$IDLE_POLLS" -ge "$IDLE_BEFORE_CORDON" ]; then
+              HOLDER="funnel-mount-holder-${NODE}"
+              if kubectl get pod "$HOLDER" -n "$NS" >/dev/null 2>&1; then
+                echo "[monitor] No workers on $NODE for $((IDLE_POLLS * POLL_SEC))s -- cordoning + removing mount-holder for Karpenter consolidation"
+                kubectl cordon "$NODE" 2>/dev/null || true
+                kubectl delete pod "$HOLDER" -n "$NS" --ignore-not-found 2>/dev/null || true
+              fi
+              IDLE_POLLS=0
+            fi
+          done
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: TES_NAMESPACE
+          value: "${TES_NAMESPACE}"
+        - name: WORK_DIR_EXPAND_GB
+          value: "${WORK_DIR_EXPAND_GB}"
+        - name: WORK_DIR_EXPAND_THRESHOLD
+          value: "${WORK_DIR_EXPAND_THRESHOLD}"
+        - name: WORK_DIR_MIN_FREE_GB
+          value: "${WORK_DIR_MIN_FREE_GB}"
+        - name: WORK_DIR_POLL_INTERVAL_SEC
+          value: "${WORK_DIR_POLL_INTERVAL_SEC}"
+        - name: WORK_DIR_EXPAND_COOLDOWN_SEC
+          value: "${WORK_DIR_EXPAND_COOLDOWN_SEC}"
+        volumeMounts:
+        - name: workdir
+          mountPath: /var/funnel-work
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+
+      # Privileged sidecar: polls the block device size and runs resize2fs when
+      # Cinder has grown the volume but the filesystem hasn't been extended yet.
+      # This handles the SCSI rescan step that the non-privileged monitor cannot do.
+      - name: resizer
+        image: ubuntu:22.04
+        securityContext:
+          privileged: true
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends e2fsprogs util-linux 2>/dev/null
+          MOUNT="/var/funnel-work"
+          POLL_SEC=30
+          echo "[resizer] Disk resizer started. Monitoring $MOUNT for block-device vs filesystem size mismatch."
+          while true; do
+            sleep $POLL_SEC
+            # Identify the block device backing /var/funnel-work from mounts
+            DEVICE=$(awk -v mnt="$MOUNT" '$2==mnt{print $1}' /proc/mounts 2>/dev/null || true)
+            if [ -z "$DEVICE" ]; then
+              continue
+            fi
+            # Trigger SCSI rescan so the kernel picks up the new Cinder volume size
+            DEV_NAME=$(basename "$DEVICE")
+            RESCAN_PATH="/sys/class/block/${DEV_NAME}/device/rescan"
+            if [ -f "$RESCAN_PATH" ]; then
+              echo 1 > "$RESCAN_PATH" 2>/dev/null || true
+            fi
+            # Compare device size vs filesystem size
+            DEV_BYTES=$(blockdev --getsize64 "$DEVICE" 2>/dev/null || echo 0)
+            FS_BYTES=$(df -B1 "$MOUNT" 2>/dev/null | awk 'NR==2{print $2}' || echo 0)
+            if [ "$DEV_BYTES" -le 0 ] || [ "$FS_BYTES" -le 0 ]; then
+              continue
+            fi
+            DEV_GB=$(( DEV_BYTES / 1024 / 1024 / 1024 ))
+            FS_GB=$(( FS_BYTES / 1024 / 1024 / 1024 ))
+            if [ "$DEV_BYTES" -gt "$FS_BYTES" ]; then
+              echo "[resizer] Device ${DEV_GB}GB > filesystem ${FS_GB}GB -- running online resize2fs on $DEVICE"
+              resize2fs "$DEVICE" && echo "[resizer] resize2fs done: $(df -h $MOUNT | awk 'NR==2{print $2}')" || echo "[resizer] resize2fs failed"
+            fi
+          done
+        volumeMounts:
+        - name: workdir
+          mountPath: /var/funnel-work
+        resources:
+          requests:
+            cpu: 5m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi

@@ -1,0 +1,247 @@
+# Funnel disk autoscaler — node-level systemd daemon approach.
+#
+# Architecture:
+#
+#   1. Secret "funnel-openstack-creds" holds OpenStack credentials + LUKS
+#      passphrase.  Created by install-ovh-mks.sh from env.variables.
+#
+#   2. DaemonSet "funnel-disk-setup" runs on every worker node.
+#      It has ONE init container ("setup", privileged, hostPID) that:
+#        a. Waits for the per-node Cinder PVC to be bound/attached.
+#        b. LUKS-formats + opens the device.
+#        c. Creates LVM PV/VG/LV, formats ext4.
+#        d. Mounts /var/funnel-work on HOST via nsenter.
+#        e. Installs autoscaler.sh + cleanup.sh + systemd unit on HOST.
+#        f. Starts funnel-disk-autoscaler.service on HOST.
+#        g. Writes /var/lib/funnel-setup-complete sentinel, exits.
+#      The main container is a minimal "pause" container (busybox sleep).
+#      It holds the PVC mount open so CSI doesn't detach the volume.
+#
+#   3. funnel-disk-autoscaler.service (systemd, not K8s):
+#        - Polls /var/funnel-work usage every POLL_SEC seconds.
+#        - On threshold: calls Cinder API to add a volume, LUKS+LVM extend.
+#        - ExecStop=cleanup.sh destroys all API-created volumes on shutdown.
+#
+# This replaces the previous DaemonSet + PVC-patch approach.
+# The main container is non-worker-blocking (sleep infinity = trivially
+# evictable for Karpenter WhenEmpty consolidation).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: funnel-disk-setup
+  namespace: ${TES_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: funnel-disk-setup
+rules:
+# Allow reading nodes (for status/debugging)
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: funnel-disk-setup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: funnel-disk-setup
+subjects:
+- kind: ServiceAccount
+  name: funnel-disk-setup
+  namespace: ${TES_NAMESPACE}
+---
+# The Secret is applied by install-ovh-mks.sh from env.variables.
+# Template shown here for reference — envsubst fills in the values.
+# This secret is mounted (env-from) into the setup init container only.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: funnel-openstack-creds
+  namespace: ${TES_NAMESPACE}
+type: Opaque
+stringData:
+  OS_AUTH_URL: "${OS_AUTH_URL}"
+  OS_TENANT_ID: "${OS_TENANT_ID}"
+  OS_USERNAME: "${OS_USERNAME}"
+  OS_PASSWORD: "${OS_PASSWORD}"
+  OS_REGION_NAME: "${OS_REGION_NAME}"
+  LUKS_PASSPHRASE: "${LUKS_PASSPHRASE}"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: funnel-disk-setup
+  namespace: ${TES_NAMESPACE}
+  labels:
+    app: funnel-disk-setup
+spec:
+  selector:
+    matchLabels:
+      app: funnel-disk-setup
+  template:
+    metadata:
+      labels:
+        app: funnel-disk-setup
+    spec:
+      serviceAccountName: funnel-disk-setup
+      nodeSelector:
+        karpenter.sh/nodepool: workers
+      tolerations:
+      - operator: "Exists"
+
+      # hostPID: required for nsenter -t 1 (enter host mount namespace)
+      hostPID: true
+
+      volumes:
+      # Host root: gives setup.sh access to /etc/fstab, /etc/systemd, etc.
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory
+
+      # Host /run: required so that nsenter systemctl can reach the host D-Bus
+      # socket at /run/dbus/system_bus_socket. Without this, systemctl inside
+      # nsenter fails with "Failed to connect to bus: No such file or directory".
+      - name: host-run
+        hostPath:
+          path: /run
+          type: Directory
+
+      initContainers:
+      - name: setup
+        image: ${FUNNEL_DISK_SETUP_IMAGE}
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/setup.sh"]
+        securityContext:
+          privileged: true      # required for cryptsetup + LVM + nsenter mount
+          runAsUser: 0
+        envFrom:
+        - secretRef:
+            name: funnel-openstack-creds
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        # Initial + expansion tunables (from env.variables)
+        - name: WORK_DIR_INITIAL_GB
+          value: "${WORK_DIR_INITIAL_GB}"
+        - name: CINDER_VOLUME_TYPE
+          value: "${CINDER_VOLUME_TYPE}"
+        - name: EXPAND_GB
+          value: "${WORK_DIR_EXPAND_GB}"
+        - name: THRESHOLD_PERCENT
+          value: "${WORK_DIR_EXPAND_THRESHOLD}"
+        - name: MIN_FREE_GB
+          value: "${WORK_DIR_MIN_FREE_GB}"
+        - name: POLL_SEC
+          value: "${WORK_DIR_POLL_INTERVAL_SEC}"
+        - name: MAX_VOLUMES
+          value: "${WORK_DIR_MAX_VOLUMES}"
+        - name: COOLDOWN_SEC
+          value: "${WORK_DIR_EXPAND_COOLDOWN_SEC}"
+        volumeMounts:
+        # Access to host filesystem for systemd + fstab + script install
+        - name: host-root
+          mountPath: /host
+          mountPropagation: Bidirectional
+        # Host /run mounted at /run/host-run so nsenter systemctl can find
+        # /run/dbus/system_bus_socket (D-Bus socket for systemd communication).
+        # nsenter -t 1 -m will see it at /run/dbus/... on the host, but only
+        # if this container's /run/host-run is bind-mounted from the host /run.
+        - name: host-run
+          mountPath: /run/host-run
+          mountPropagation: Bidirectional
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+
+      containers:
+      
+      # NFS keepalive container — the SOLE owner of the Manila NFS mount on this node.
+      #
+      # Responsibilities:
+      #   1. Mount Manila NFS on the HOST mount namespace at NFS_MOUNT_PATH.
+      #   2. Run a keepalive loop (touch every NFS_KEEPALIVE_INTERVAL seconds) to
+      #      prevent the Manila TCP session from going idle and being dropped by OVH.
+      #   3. If the mount disappears (e.g. node rebooted, OVH event), remount.
+      #      Safe: if the mount is gone, any running task using it is already broken.
+      #
+      # Task worker pods NEVER mount/unmount NFS themselves — they wait for this
+      # container's mount to become visible (wait-for-nfs initContainer + hostPath
+      # + HostToContainer propagation) and then use it.
+      # This is the only design safe for parallel tasks sharing the same node.
+      #
+      # Mount: hard (not soft) — Manila TCP reconnect retries silently rather than
+      # returning I/O error on momentary hiccups.  Keepalive prevents idle timeouts.
+      - name: holder
+        image: busybox:1.36
+        securityContext:
+          privileged: true   # required for nsenter into host mount namespace
+        command: ["sh", "-c"]
+        args:
+        - |
+          NSENTER="nsenter -t 1 --mount --"
+          NFS_EXPORT="${NFS_EXPORT_PATH}"
+          NFS_PATH="${NFS_MOUNT_PATH}"
+          INTERVAL="${NFS_KEEPALIVE_INTERVAL}"
+
+          mount_nfs() {
+            echo "[nfs-keepalive] Mounting $NFS_EXPORT at $NFS_PATH on host..."
+            # Clear any stale VFS entry before mounting — safe here because the
+            # DaemonSet holder is the sole owner of this mount.  Lazy unmount (-l)
+            # dequeues the VFS entry even when the TCP session is already dead.
+            $NSENTER umount -f -l "$NFS_PATH" 2>/dev/null || true
+            $NSENTER mkdir -p "$NFS_PATH" 2>/dev/null || \
+              $NSENTER mkdir -p "$NFS_PATH"   # retry once after umount clears stale
+            $NSENTER mount -t nfs \
+              -o vers=4,hard,timeo=600,retrans=5,_netdev \
+              "$NFS_EXPORT" "$NFS_PATH"
+            echo "[nfs-keepalive] Mounted OK."
+          }
+
+          # Initial mount. Skip if already mounted and healthy (e.g. manual intervention).
+          if $NSENTER mountpoint -q "$NFS_PATH" 2>/dev/null && \
+             $NSENTER timeout 5 ls "$NFS_PATH" >/dev/null 2>&1; then
+            echo "[nfs-keepalive] NFS already mounted and healthy at $NFS_PATH"
+          else
+            mount_nfs
+          fi
+
+          echo "[nfs-keepalive] Keepalive loop started (interval: ${INTERVAL}s)."
+          while true; do
+            sleep "$INTERVAL"
+            # Mount gone : remount (tasks already broken if this happens)
+            if ! $NSENTER mountpoint -q "$NFS_PATH" 2>/dev/null; then
+              echo "[nfs-keepalive] Mount gone! Remounting..."
+              mount_nfs
+              continue
+            fi
+            # Mount present — lightweight touch to keep TCP session alive
+            if ! $NSENTER timeout 15 touch "$NFS_PATH/.keepalive" 2>/dev/null; then
+              echo "[nfs-keepalive] WARNING: keepalive touch timed out. Manila may be slow."
+            fi
+          done
+        env:
+        - name: NFS_EXPORT_PATH
+          value: "${NFS_EXPORT_PATH}"
+        - name: NFS_MOUNT_PATH
+          value: "${NFS_MOUNT_PATH}"
+        - name: NFS_KEEPALIVE_INTERVAL
+          value: "${NFS_KEEPALIVE_INTERVAL}"
+        resources:
+          requests:
+            cpu: 1m
+            memory: 8Mi
+          limits:
+            cpu: 10m
+            memory: 32Mi

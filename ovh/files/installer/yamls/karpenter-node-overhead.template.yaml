@@ -1,0 +1,62 @@
+# Ghost DaemonSet: Karpenter Node Overhead Reservation
+#
+# OVH Karpenter does NOT support kubelet.systemReserved in the NodePool CRD.
+# Standard Karpenter uses pod resource *requests* from DaemonSets to simulate
+# available capacity on a not-yet-provisioned node.
+#
+# The problem: Karpenter starts its simulation from raw flavor capacity (e.g.
+# 3815 Mi for c3-4), but OVH's kubelet reserves a large chunk for system use.
+# On c3-4: capacity=3815Mi, allocatable=1975Mi → OVH reserves 1840Mi.
+# Karpenter doesn't know this and thinks 3815Mi is usable → picks nodes that
+# are too small → infinite spin-up loop.
+#
+# Fix: this ghost DaemonSet reserves exactly (capacity - allocatable) so
+# Karpenter's bin-packing simulation matches reality.
+# Value is set from NODE_OVERHEAD_MI in env.variables (auto-calculated by the
+# installer from a real node's capacity vs allocatable, or set manually).
+#
+# It targets only worker nodes (not the system node).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: karpenter-node-overhead
+  namespace: kube-system
+  labels:
+    app: karpenter-node-overhead
+    purpose: karpenter-scheduling-simulation
+spec:
+  selector:
+    matchLabels:
+      app: karpenter-node-overhead
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: karpenter-node-overhead
+    spec:
+      nodeSelector:
+        karpenter.sh/nodepool: workers
+      tolerations:
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 300
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 300
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: overhead-placeholder
+        image: gcr.io/pause-amd64:3.9
+        command: ["/pause"]
+        resources:
+          requests:
+            cpu: 2m
+            # capacity - allocatable = OVH system reservation (auto-set by installer)
+            memory: ${NODE_OVERHEAD_MI}Mi
+          limits:
+            cpu: 10m
+            memory: ${NODE_OVERHEAD_MI}Mi

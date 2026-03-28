@@ -1,0 +1,47 @@
+# Helm values for openstack-manila-csi (cloud-provider-openstack/openstack-manila-csi)
+# Install with:
+#   helm repo add cloud-provider-openstack https://kubernetes.github.io/cloud-provider-openstack
+#   helm install csi-driver-manila cloud-provider-openstack/openstack-manila-csi \
+#     -n kube-system -f yamls/manila-csi-values.yaml
+#
+# Prerequisites: the 'cloud-config' Secret must exist in kube-system with a
+# 'clouds.yaml' key before the CSI driver starts. The installer creates it below.
+
+shareProtocols:
+  - protocolSelector: NFS
+    fsGroupPolicy: None          # required — omitting this renders as nil and breaks YAML
+    fwdNodePluginEndpoint:
+      dir: /var/lib/kubelet/plugins/csi-nfsplugin
+      sockFile: csi.sock
+
+# Mount the OVH OpenStack clouds.yaml into the controller StatefulSet
+controllerplugin:
+  nodeplugin:
+    extraEnv:
+      - name: OS_CLOUD
+        value: ${OS_CLOUD}
+  volumes:
+    - name: cloud-config
+      secret:
+        secretName: cloud-config
+  volumeMounts:
+    - name: cloud-config
+      mountPath: /etc/openstack
+      readOnly: true
+
+# Mount the same secret into each node DaemonSet pod
+nodeplugin:
+  tolerations:
+    - operator: "Exists"
+  nodeplugin:
+    extraEnv:
+      - name: OS_CLOUD
+        value: ${OS_CLOUD}
+  volumes:
+    - name: cloud-config
+      secret:
+        secretName: cloud-config
+  volumeMounts:
+    - name: cloud-config
+      mountPath: /etc/openstack
+      readOnly: true

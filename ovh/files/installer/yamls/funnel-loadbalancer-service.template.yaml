@@ -1,0 +1,29 @@
+# OVH Public Cloud LoadBalancer (Octavia) — public-to-private setup.
+# Cluster K8s >= 1.31: Octavia is default; no class annotation required.
+# MKS Free plan: use loadbalancer.ovhcloud.com/flavor (not flavor-id).
+# subnet-id / network-id omitted — CCM auto-detects from cluster's nodesSubnetId.
+# A Floating IP (public) is automatically attached via tes-lb-gateway.
+# Access restricted to EXTERNAL_IP (Cromwell server) only.
+# OVH assigns the external IP; save it after: kubectl get svc funnel-lb -n ${TES_NAMESPACE}
+apiVersion: v1
+kind: Service
+metadata:
+  name: funnel-lb
+  namespace: ${TES_NAMESPACE}
+  labels:
+    app: funnel
+  annotations:
+    # MKS Free plan — use name-based flavor (not UUID)
+    loadbalancer.ovhcloud.com/flavor: "small"
+spec:
+  type: LoadBalancer
+  # Restrict inbound traffic to the Cromwell server IP only
+  loadBalancerSourceRanges:
+    - "${EXTERNAL_IP}/32"
+  ports:
+    - port: 80
+      targetPort: ${FUNNEL_PORT}
+      protocol: TCP
+      name: http
+  selector:
+    app: funnel

@@ -1,0 +1,27 @@
+# OVHNodeClass — describes the OVHcloud-specific configuration for Karpenter nodes.
+# Variables substituted by installer Phase 2.5:
+#   ${OVH_PROJECT_ID}  — OVHcloud Public Cloud project ID
+#   ${KUBE_ID}         — MKS cluster ID
+#   ${OVH_REGION}      — OVHcloud region (e.g. GRA9)
+# The 'ovh-credentials' Secret must already exist in the 'karpenter' namespace
+# before applying this resource (installer creates it from env.variables).
+apiVersion: karpenter.ovhcloud.sh/v1alpha1
+kind: OVHNodeClass
+metadata:
+  name: default
+spec:
+  # OVHcloud Public Cloud project ID (required — cannot be auto-detected)
+  serviceName: ${OVH_PROJECT_ID}
+  # MKS cluster ID (required — Karpenter will manage nodepools in this cluster)
+  kubeId: ${KUBE_ID}
+  # OVHcloud region (required)
+  region: ${OVH_REGION}
+  # Reference to the Kubernetes Secret holding OVH API credentials
+  # (applicationKey, applicationSecret, consumerKey)
+  credentialsSecretRef:
+    name: ovh-credentials
+    namespace: karpenter
+  # Use hourly billing (false = on-demand, true = monthly commitment)
+  monthlyBilled: false
+  # Do not enforce anti-affinity between Karpenter-provisioned nodes
+  antiAffinity: false

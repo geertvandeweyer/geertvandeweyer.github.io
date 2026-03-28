@@ -1,0 +1,10 @@
+{
+  "name": "Long sleep task",
+  "description": "Sleeps for 2 minutes to test reconciler timing",
+  "executors": [
+    {
+      "image": "alpine",
+      "command": ["sleep", "120"]
+    }
+  ]
+}

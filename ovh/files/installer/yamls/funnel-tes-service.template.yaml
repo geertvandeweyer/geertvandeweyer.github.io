@@ -1,0 +1,23 @@
+# Internal ClusterIP service — unchanged from AWS.
+# Worker pods connect to this for RPC (port 9090).
+# External access is via the separate funnel-loadbalancer-service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tes-service
+  namespace: ${TES_NAMESPACE}
+  labels:
+    app: funnel
+spec:
+  type: ClusterIP
+  ports:
+    - port: ${FUNNEL_PORT}
+      targetPort: ${FUNNEL_PORT}
+      protocol: TCP
+      name: http
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: rpc
+  selector:
+    app: funnel

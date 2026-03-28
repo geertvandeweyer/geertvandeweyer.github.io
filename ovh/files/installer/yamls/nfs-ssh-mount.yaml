@@ -1,0 +1,150 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# nfs-ssh-mount — Manila NFS local bridge
+#
+# Deploys a persistent SSH+NFS pod on the system node so the Manila shared
+# filesystem (/mnt/shared) can be mounted on any local workstation via sshfs.
+# This gives Cromwell (running locally) access to the same /mnt/shared tree
+# that worker pods see inside the cluster.
+#
+# First-time setup:
+#   1. Create the SSH authorized_keys secret (once):
+#      kubectl create secret generic nfs-ssh-keys -n funnel \
+#        --from-literal=authorized_keys="$(cat ~/.ssh/id_rsa.pub)"
+#
+#   2. Apply this yaml:
+#      kubectl apply -f nfs-ssh-mount.yaml
+#
+#   3. Mount locally:
+#      bash OVH_installer/testing/mount-shared.sh
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── 1. Entrypoint ConfigMap ───────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nfs-ssh-entrypoint
+  namespace: funnel
+data:
+  entrypoint.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "[nfs-ssh] Installing openssh..."
+    apk add --no-cache openssh
+
+    # Generate host keys (idempotent across pod restarts)
+    ssh-keygen -A
+
+    cat > /etc/ssh/sshd_config <<'SSHD_EOF'
+    Port 22
+    PermitRootLogin prohibit-password
+    PubkeyAuthentication yes
+    AuthorizedKeysFile /root/.ssh/authorized_keys
+    PasswordAuthentication no
+    ChallengeResponseAuthentication no
+    UsePAM no
+    PrintMotd no
+    Subsystem sftp /usr/lib/ssh/sftp-server
+    SSHD_EOF
+
+    mkdir -p /run/sshd /root/.ssh
+    chmod 700 /root/.ssh
+
+    # Copy authorized_keys from the Secret (sshd rejects secret-volume paths
+    # directly because of tmpfs ownership/mode checks)
+    if [ -s /etc/ssh-keys/authorized_keys ]; then
+      cp /etc/ssh-keys/authorized_keys /root/.ssh/authorized_keys
+      chmod 600 /root/.ssh/authorized_keys
+      echo "[nfs-ssh] Loaded $(wc -l < /root/.ssh/authorized_keys) authorized key(s)"
+    else
+      echo "[nfs-ssh] WARNING: authorized_keys secret is empty — SSH will not work."
+      echo "[nfs-ssh] Run:"
+      echo "[nfs-ssh]   kubectl create secret generic nfs-ssh-keys -n funnel \\"
+      echo "[nfs-ssh]     --from-literal=authorized_keys=\"\$(cat ~/.ssh/id_rsa.pub)\" \\"
+      echo "[nfs-ssh]     --dry-run=client -o yaml | kubectl apply -f -"
+    fi
+
+    echo "[nfs-ssh] Manila NFS share:"
+    df -h /mnt/shared || echo "  (share not yet visible)"
+
+    echo "[nfs-ssh] Starting sshd on port 22..."
+    exec /usr/sbin/sshd -D -e
+
+---
+# ── 2. Deployment ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-ssh-mount
+  namespace: funnel
+  labels:
+    app: nfs-ssh-mount
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nfs-ssh-mount
+  template:
+    metadata:
+      labels:
+        app: nfs-ssh-mount
+    spec:
+      # Pin to the always-on system node (nodepool=system, amd64)
+      nodeSelector:
+        nodepool: system
+        kubernetes.io/arch: amd64
+
+      volumes:
+        # Manila NFS share — already provisioned, ReadWriteMany
+        - name: shared-nfs
+          persistentVolumeClaim:
+            claimName: manila-shared-pvc
+        # Entrypoint script
+        - name: entrypoint
+          configMap:
+            name: nfs-ssh-entrypoint
+            defaultMode: 0755
+        # SSH authorized_keys from Secret
+        - name: ssh-keys
+          secret:
+            secretName: nfs-ssh-keys
+            defaultMode: 0600
+
+      containers:
+        - name: nfs-ssh
+          image: alpine:3
+          command: ["/entrypoint/entrypoint.sh"]
+          ports:
+            - name: ssh
+              containerPort: 22
+          volumeMounts:
+            - name: shared-nfs
+              mountPath: /mnt/shared
+            - name: entrypoint
+              mountPath: /entrypoint
+            - name: ssh-keys
+              mountPath: /etc/ssh-keys
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+
+---
+# ── 3. ClusterIP Service (used by kubectl port-forward) ───────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-ssh-mount
+  namespace: funnel
+spec:
+  type: ClusterIP
+  selector:
+    app: nfs-ssh-mount
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22

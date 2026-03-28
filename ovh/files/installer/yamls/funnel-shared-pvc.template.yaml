@@ -1,0 +1,30 @@
+# Shared NFS filesystem for Funnel server + all worker pods.
+#
+# Backed by in-cluster NFS server (Phase 3 installs it as Helm release
+# "nfs-shared" in namespace "nfs-system").  The NFS pod runs on the
+# system node, backed by a Cinder block volume (csi-cinder-high-speed).
+#
+# Access mode: ReadWriteMany — all pods mount the same directory at /mnt/shared.
+#
+# Architecture:
+#   Cinder PVC (RWO, system node)
+#   → NFS pod (nfs-system ns, system node)
+#   → Service ClusterIP (nfs-shared-nfs-server-provisioner.nfs-system)
+#   → funnel-shared-pvc (RWX, StorageClass: nfs-shared)
+#   → Funnel server Deployment + every Funnel worker Job  → /mnt/shared
+#
+# To inspect the mount inside a running worker:
+#   kubectl exec -n ${TES_NAMESPACE} <worker-pod> -- ls /mnt/shared
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: funnel-shared-pvc
+  namespace: ${TES_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-shared
+  resources:
+    requests:
+      storage: ${FILE_STORAGE_SIZE}Gi

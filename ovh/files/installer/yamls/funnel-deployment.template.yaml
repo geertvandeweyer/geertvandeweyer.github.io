@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: funnel
+  namespace: ${TES_NAMESPACE}
+  labels:
+    app: funnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: funnel
+  template:
+    metadata:
+      labels:
+        app: funnel
+    spec:
+      # Pin Funnel server pod to the fixed system node pool
+      nodeSelector:
+        nodepool: system
+      serviceAccountName: funnel
+      containers:
+        - name: funnel
+          # Public Docker Hub image — no ECR auth needed
+          image: ${FUNNEL_IMAGE}
+          imagePullPolicy: Always
+          args:
+            - server
+            - run
+            - --config=/etc/funnel/funnel.yaml
+          env:
+            # OVH S3 credentials from Secret (replaces AWS IAM role)
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ovh-s3-credentials
+                  key: s3_access_key
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ovh-s3-credentials
+                  key: s3_secret_key
+            # OVH S3 region and endpoint
+            - name: AWS_REGION
+              value: "${OVH_S3_REGION}"
+            - name: AWS_DEFAULT_REGION
+              value: "${OVH_S3_REGION}"
+            - name: S3_BUCKET
+              value: "${OVH_S3_BUCKET}"
+            - name: FUNNEL_S3_BUCKET
+              value: "${OVH_S3_BUCKET}"
+          ports:
+            - containerPort: ${FUNNEL_PORT}
+              name: http
+            - containerPort: 9090
+              name: rpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/funnel
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            # Persistent BoltDB storage — survives pod restarts/upgrades
+            - name: funnel-db
+              mountPath: /data
+            # Shared NFS filesystem — Funnel server can resolve NFS paths in task I/O
+            - name: shared-nfs
+              mountPath: /mnt/shared
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /service-info
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /service-info
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: funnel-config
+        - name: tmp
+          emptyDir: {}
+        # Persistent BoltDB storage — survives pod restarts/upgrades
+        - name: funnel-db
+          persistentVolumeClaim:
+            claimName: funnel-db-pvc
+        # Shared NFS filesystem (OVH Manila) — ReadWriteMany, persisted in OVH File Storage
+        - name: shared-nfs
+          persistentVolumeClaim:
+            claimName: manila-shared-pvc
