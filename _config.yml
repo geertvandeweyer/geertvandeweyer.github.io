@@ -22,7 +22,6 @@ plugins:
   - jekyll-github-metadata
 
 exclude:
-  - "*.sh"
   - ".git"
   - "node_modules"
   - "Dockerfile"
