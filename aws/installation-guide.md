@@ -1,31 +1,90 @@
 ---
 layout: default
 title: "AWS Installation Guide"
-description: "Complete guide to deploying Cromwell + TES on AWS EKS with Karpenter"
+description: "Guide to deploying Cromwell + TES on AWS EKS (eu-north-1)"
 permalink: /aws/installation-guide/
 ---
 
-# AWS EKS + Cromwell + Funnel TES Installation Guide
+# AWS EKS Installation Guide
 
-**Complete, production-ready guide to deploying a genomic workflow platform on AWS**
+**Deploying Cromwell + Funnel TES on AWS EKS with Karpenter**
 
-Deploy a scalable workflow execution environment on **AWS EKS** with managed Kubernetes, EFS storage, S3 object storage, and Karpenter auto-scaling.
+> **NOTE:** This is a stub page — contents will be revised after production validation on eu-north-1. The architecture and phase outline below reflect the intended deployment plan.
 
 ---
 
-## 📋 Table of Contents
+## Architecture Overview
 
-1. [Overview & Architecture](#overview--architecture)
-2. [Prerequisites](#prerequisites)
-3. [Phase 0: Environment Setup](#phase-0-environment-setup)
-4. [Phase 1: EKS Cluster Creation](#phase-1-eks-cluster-creation)
-5. [Phase 2: Karpenter Auto-scaling](#phase-2-karpenter-auto-scaling)
-6. [Phase 3: EFS Shared Storage](#phase-3-efs-shared-storage)
-7. [Phase 4: S3 Object Storage](#phase-4-s3-object-storage)
-8. [Phase 5: Deploy Funnel TES](#phase-5-deploy-funnel-tes)
-9. [Phase 6: Configure Cromwell](#phase-6-configure-cromwell)
-10. [Phase 7: Verification & Testing](#phase-7-verification--testing)
-11. [Troubleshooting](#troubleshooting)
+```
+AWS (eu-north-1 / Stockholm, 3 AZ)
+┌────────────────────────────────────────────────────┐
+│ VPC (10.0.0.0/16)                                    │
+│ ├─ Public subnets (ALB, NAT Gateway)                 │
+│ └─ Private subnets (EKS nodes, EFS mount targets)      │
+└────────────────────────────────────────────────────┘
+         │
+         ├─ EKS Cluster (Kubernetes 1.34)
+         │  ├─ System Node (t4g.medium, always-on)
+         │  │  ├─ Karpenter Controller
+         │  │  └─ Funnel Server
+         │  └─ Worker Nodes (Karpenter-managed, Spot)
+         │     └─ Task Pods (on demand)
+         │
+         ├─ EFS (Elastic File System)
+         │  └─ Multi-AZ shared storage, NFS-mounted
+         │
+         ├─ EBS volumes (per task)
+         │  └─ gp3, auto-provisioned by Karpenter
+         │
+         ├─ ECR (Elastic Container Registry)
+         │  └─ Private container image registry
+         │
+         └─ S3
+            └─ Task I/O, workflow inputs/outputs, cold archive
+```
+
+**Key Technologies**
+
+| Technology | Role | Details |
+|---|---|---|
+| **EKS** | Kubernetes cluster | Managed service, $0.10/hr control plane |
+| **Karpenter** | Auto-scaling | Scales workers on demand, Spot support |
+| **EFS** | Shared storage | Multi-AZ NFS, CSI driver |
+| **EBS** | Task local storage | gp3 volumes, auto-provisioned |
+| **S3** | Object storage | Workflow I/O, cold archive |
+| **ECR** | Container registry | Private registry for task images |
+
+---
+
+## Deployment Phases (Planned)
+
+| Phase | Description | Estimated Time |
+|---|---|---|
+| **Phase 0** | Prerequisites: AWS account, IAM, quotas, tools | 15 min |
+| **Phase 1** | VPC + EKS cluster creation (eksctl / CloudFormation) | 25–35 min |
+| **Phase 2** | Karpenter autoscaler installation | 10 min |
+| **Phase 3** | EFS shared storage + CSI driver | 10 min |
+| **Phase 4** | S3 configuration + IAM policies | 10 min |
+| **Phase 5** | ECR registry setup + image push | 10 min |
+| **Phase 6** | Funnel TES deployment | 10 min |
+| **Phase 7** | Cromwell integration + verification | 15 min |
+
+**Estimated total: ~90–120 minutes**
+
+---
+
+## Prerequisites
+
+- AWS account with administrator or scoped IAM access
+- Quotas increased for `eu-north-1`: see [Quota Guide](/aws/quota/)
+- Tools installed: `aws` CLI v2, `eksctl`, `kubectl`, `helm`
+- S3 bucket pre-created in `eu-north-1`
+- ECR registry created in `eu-north-1`
+
+---
+
+> **Content to be added:** Step-by-step commands for each phase, YAML manifests, IAM policy documents, verification steps, and troubleshooting references.
+
 
 ---
 
