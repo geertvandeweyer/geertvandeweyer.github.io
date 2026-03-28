@@ -73,17 +73,201 @@ AWS (eu-north-1 / Stockholm, 3 AZ)
 
 ---
 
-## Prerequisites
+## (P)rerequisites
 
-- AWS account with administrator or scoped IAM access
-- Quotas increased for `eu-north-1`: see [Quota Guide](/aws/quota/)
-- Tools installed: `aws` CLI v2, `eksctl`, `kubectl`, `helm`
-- S3 bucket pre-created in `eu-north-1`
-- ECR registry created in `eu-north-1`
+### P.1 Micromamba / Conda
 
----
+Install **Micromamba or Conda** with an `aws` environment. This is recommended to keep all tooling and config settings localised and isolated from the system Python.
 
-> **Content to be added:** Step-by-step commands for each phase, YAML manifests, IAM policy documents, verification steps, and troubleshooting references.
+```bash
+# Create environment (one-time)
+micromamba create -n aws
+micromamba activate aws
+micromamba install \
+  -c conda-forge \
+  -c defaults \
+  python=3
+```
+
+⭐ Keep this env active during the install procedure!
+
+### P.2 AWS CLI v2
+
+The AWS CLI is the primary tool for interacting with all AWS services (EC2, EKS, EFS, S3, IAM, Service Quotas, SSM). Install it as a standalone binary into the conda env:
+
+```bash
+BIN_DIR=$(dirname $(which python3))
+mkdir -p awscli_release && cd awscli_release
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+./aws/install --bin-dir "$BIN_DIR" --install-dir "$BIN_DIR/../lib/awscli"
+cd ..
+```
+
+Verify:
+```bash
+aws --version
+# aws-cli/2.x.x Python/3.x.x Linux/...
+```
+
+### P.3 eksctl
+
+`eksctl` is the official CLI for creating and managing EKS clusters and node groups. Install the latest release as a standalone binary:
+
+```bash
+BIN_DIR=$(dirname $(which python3))
+mkdir -p eksctl_release && cd eksctl_release
+# pick version: https://github.com/eksctl-io/eksctl/releases
+EKSCTL_VERSION="0.207.0"
+curl -sLO "https://github.com/eksctl-io/eksctl/releases/download/v${EKSCTL_VERSION}/eksctl_Linux_amd64.tar.gz"
+tar -zxvf eksctl_Linux_amd64.tar.gz
+mv eksctl "$BIN_DIR"
+cd ..
+```
+
+Verify:
+```bash
+eksctl version
+# 0.207.0
+```
+
+### P.4 kubectl
+
+`kubectl` is the Kubernetes CLI. Install the latest stable release into the conda env:
+
+```bash
+BIN_DIR=$(dirname $(which python3))
+mkdir -p kubectl_release && cd kubectl_release
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl
+mv kubectl "$BIN_DIR"
+cd ..
+```
+
+Verify:
+```bash
+kubectl version --client
+# Client Version: v1.3x.x
+```
+
+### P.5 helm
+
+Helm is the Kubernetes package manager, used to deploy Karpenter and the EFS CSI driver. Install the latest v3 release:
+
+```bash
+BIN_DIR=$(dirname $(which python3))
+mkdir -p helm_release && cd helm_release
+# pick version: https://github.com/helm/helm/releases
+wget https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
+tar -zxvf helm-v3.17.3-linux-amd64.tar.gz
+mv linux-amd64/helm "$BIN_DIR"
+cd ..
+```
+
+Verify:
+```bash
+helm version
+# version.BuildInfo{Version:"v3.17.3", ...}
+```
+
+### P.6 gettext (envsubst)
+
+The installer uses `envsubst` (from the `gettext` package) to render YAML and policy templates before applying them. Install via conda:
+
+```bash
+micromamba install -c conda-forge gettext
+```
+
+Verify:
+```bash
+envsubst --version
+# envsubst (GNU gettext-runtime) ...
+```
+
+### P.7 python3
+
+The instance-type filtering script (`update-nodepool-types.sh`) is a Python 3 script embedded in the installer. It only uses the standard library — no extra pip packages are needed. `python3` is already present from step P.1.
+
+```bash
+python3 --version
+# Python 3.x.x
+```
+
+### P.8 AWS Account & IAM Credentials
+
+#### Account requirements
+
+- **AWS account** with billing enabled in the target region (`eu-north-1` by default)
+- **IAM user or role** with sufficient permissions (see table below)
+- **Programmatic access** via Access Key + Secret Key, EC2 instance profile, or AWS SSO
+
+#### Required IAM permissions
+
+The deploying identity needs the following AWS-managed policies (or an equivalent custom inline policy):
+
+| Policy | Needed for |
+|--------|------------|
+| `AmazonEKSClusterPolicy` + `AmazonEKSServicePolicy` | EKS cluster creation |
+| `AmazonEC2FullAccess` | EC2 instances, VPC, security groups, AMI lookup |
+| `IAMFullAccess` | Create Karpenter node role + IRSA roles/policies |
+| `AWSCloudFormationFullAccess` | Karpenter prerequisite CloudFormation stack |
+| `AmazonS3FullAccess` | Task I/O bucket creation and access |
+| `AmazonElasticFileSystemFullAccess` | EFS filesystem + mount target creation |
+| `AmazonSSMReadOnlyAccess` | AMI ID lookup via SSM parameter store |
+| `ServiceQuotasReadOnlyAccess` | Spot vCPU quota auto-detection |
+| `AmazonEC2ContainerRegistryFullAccess` | Image push to ECR during build phase |
+
+⭐ A minimal scoped inline policy covering only the resources created by this installer is available at `policies/iam-installer-policy.json`.
+
+#### Configure credentials
+
+```bash
+aws configure
+# AWS Access Key ID:     <your-access-key>
+# AWS Secret Access Key: <your-secret-key>
+# Default region name:   eu-north-1
+# Default output format: json
+```
+
+Verify:
+```bash
+aws sts get-caller-identity
+# { "Account": "123456789012", "UserId": "AIDA...", "Arn": "arn:aws:iam::..." }
+```
+
+### P.9 Quotas & Capacity
+
+Before starting, ensure your AWS account has sufficient quota in the **target region**. Check via **AWS Console → Service Quotas → EC2**, or with the CLI:
+
+```bash
+# Standard Spot Instance vCPU quota
+aws service-quotas list-service-quotas \
+  --service-code ec2 \
+  --region eu-north-1 \
+  --query "Quotas[?QuotaName=='All Standard (A, C, D, H, I, M, R, T, Z) Spot Instance Requests'].{Name:QuotaName,Value:Value}" \
+  --output table
+
+# On-Demand vCPU quota (for system node)
+aws service-quotas list-service-quotas \
+  --service-code ec2 \
+  --region eu-north-1 \
+  --query "Quotas[?QuotaName=='Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances'].{Name:QuotaName,Value:Value}" \
+  --output table
+```
+
+| Resource | Minimal | Notes |
+|----------|---------|-------|
+| **Spot vCPU (Standard family)** | 100+ | Karpenter worker pool; auto-detected from `SPOT_QUOTA` in `env.variables` |
+| **On-Demand vCPU (Standard family)** | 4+ | System node (`t4g.medium` = 2 vCPU; keep headroom) |
+| **EBS gp3 storage (GB)** | 500+ | Auto-provisioned per-task local volumes |
+| **EFS filesystems** | 1 | Shared `/mnt/efs` across all worker nodes |
+| **VPCs** | 1 | Created by CloudFormation prerequisite stack |
+| **Elastic IPs** | 1 | NAT Gateway for private subnet outbound access |
+| **NAT Gateways** | 1 | Outbound internet from private subnets |
+| **S3 buckets** | 1 | Task I/O and workflow logs |
+| **ECR repositories** | 1 | Funnel worker container image |
+
+Request increases via **AWS Console → Service Quotas → Request increase**. Spot vCPU quota increases are typically approved within minutes; EBS and EIP increases within 1–2 hours.
 
 
 ---
@@ -150,61 +334,6 @@ AWS (eu-north-1 / Stockholm, 3 AZ)
 | **Authentication** | IAM roles/policies | OVH API tokens |
 | **Cost Model** | Pay-per-hour on-demand | Fixed project quota + overage |
 | **Karpenter Limits** | Spot quota limits | vCPU/RAM quota limits |
-
----
-
-## Prerequisites
-
-### AWS Account & Credentials
-
-1. **AWS Account** with appropriate permissions
-2. **IAM User** with programmatic access (Access Key + Secret Key)
-3. **AWS CLI** configured: `aws configure`
-4. **Verification**:
-   ```bash
-   aws sts get-caller-identity
-   # Should return: { "Account": "123456789012", "UserId": "...", "Arn": "arn:aws:iam::..." }
-   ```
-
-### Local Tools
-
-```bash
-# AWS CLI (https://aws.amazon.com/cli/)
-aws --version
-
-# eksctl (https://eksctl.io/)
-eksctl version
-
-# kubectl (https://kubernetes.io/docs/tasks/tools/)
-kubectl version --client
-
-# Helm (https://helm.sh/)
-helm version
-
-# Karpenter CLI (optional, for advanced management)
-karpenter version
-```
-
-### AWS Resource Quotas
-
-Check your account limits in **AWS Console → Service Quotas → EC2**:
-
-| Quota | Required | Command |
-|-------|----------|---------|
-| **vCPU (On-Demand)** | 64+ | `aws service-quotas list-service-quotas --service-code ec2 --query "Quotas[?QuotaName=='On-Demand ... Instances']"` |
-| **Spot Instances** | 100+ | `aws service-quotas list-service-quotas --service-code ec2 --query "Quotas[?contains(QuotaName, 'Spot')]"` |
-| **EBS Volumes** | 200+ | `aws service-quotas list-service-quotas --service-code ebs --query "Quotas[?QuotaName=='General Purpose SSD Volumes']"` |
-| **EBS Snapshot Storage** | 500 GB+ | Related to EBS quota |
-
-Request quota increases if needed (typically 2–4 hours).
-
-### Disk Space
-
-```bash
-# Installer downloads ~500 MB (Karpenter, Funnel, Cromwell)
-# EFS allocates 150 GB initially (expandable)
-# Local workspace: ~2 GB for git repos + configs
-```
 
 ---
 
