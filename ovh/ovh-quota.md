@@ -2,7 +2,7 @@
 layout: default
 title: "Karpenter OVH Quota Management"
 description: "Preventing 412 InsufficientVCPUsQuota errors on OVHcloud"
-permalink: /karpenter/ovh-quota/
+permalink: /ovh/ovh-quota/
 ---
 
 # Karpenter OVH Quota Management
@@ -19,19 +19,18 @@ On OVHcloud, Karpenter must respect your **project quota** (typically 34–100 v
 
 ## The Problem
 
-### Root Cause
 
-OVH Karpenter bin-packs all pending pods onto **as few nodes as possible** to minimize cost. Without restrictions, it selects the **largest available flavor** to fit the most pods:
+OVH Karpenter bin-packs all pending pods onto **as few nodes as possible** to minimize cost. It has intelligent rules to optimize costs, but there are drawbacks:
 
 ```
-8 pending pods × 4 vCPU each = 32 vCPU total
+15 pending pods × 4 vCPU each = 60 vCPU total
 
-Karpenter thinks: "I need 32 vCPU. The largest flavor is a10-90 (90 vCPU).
+Karpenter thinks: "I need 60 vCPU. The cheapest available flavor that fits all is b3-256 (64 vCPU).
 One node will fit everything!"
 
-OVH API responds: "You only have 34 vCPU quota. 90 > 34. Rejected. (412)"
+OVH API responds: "You only have 34 vCPU quota. 64 > 34. Rejected. (412)"
 
-Karpenter retries every 30s, looping forever.
+Karpenter retries every 30s, looping forever, execution nothing. 
 ```
 
 ### Symptoms
@@ -49,22 +48,25 @@ Karpenter retries every 30s, looping forever.
 
 ### Layer 1: Family Filtering (`WORKER_FAMILIES`)
 
-Exclude oversized or specialty flavors:
+Exclude oversized or specialty flavors in `env.variables`
 
 ```bash
-# Only compute family (exclude GPU, HPC, memory-optimized)
+# INCLUDE Only compute family (exclude GPU, HPC, memory-optimized)
 WORKER_FAMILIES="c3"
+# or all general families : 
+WORKER_FAMILIES="b2,b3,r2,r3,c2,c3,d2"
+
+# EXCLUDE specific patterns reflicting windows, gpu machines, bare metal, etc
+EXCLUDE_TYPES="a10,h100,rtx5000,i1,win,t1,t2,flex"
 
 # Skip these when scanning OVH API:
 # - a10-90 (90 vCPU GPU) ❌
-# - b3-256 (256 vCPU HPC) ❌
-# - r3-8 (memory-intensive) ❌
-# - keep c3-4, c3-8, c3-16, c3-32 ✅
+# - keep c3-4, c3-8, c3-16, b3-32 ✅
 ```
 
 ### Layer 2: Per-Flavor Caps (`WORKER_MAX_VCPU`, `WORKER_MAX_RAM_GB`)
 
-Cap individual flavors to prevent selecting resource hogs:
+Cap individual flavors to prevent selecting huge instances:
 
 ```bash
 WORKER_MAX_VCPU="16"       # Largest node is 16 vCPU (c3-32)
@@ -72,12 +74,20 @@ WORKER_MAX_RAM_GB="32"     # Largest node is 32 GB (c3-32)
 
 # Even if c3-32 exists, it's the ceiling.
 # c3-4 (2 vCPU), c3-8 (4 vCPU), c3-16 (8 vCPU), c3-32 (16 vCPU) all fit.
-# a10-90 (90 vCPU) is filtered out: 90 > 16. ❌
+# b3-256 (64 vCPU) is filtered out: 64 > 16. ❌
 ```
 
 ### Layer 3: NodePool Limits (`limits.cpu`, `limits.memory`)
 
 Hard cap on total cluster resources:
+
+```bash
+OVH_VCPU_QUOTA="34"              # Total vCPU quota across ALL nodes in the region
+OVH_RAM_QUOTA_GB="430"           # Total RAM quota in GB across ALL nodes
+
+```
+
+This is set in the nodepool yaml:
 
 ```yaml
 limits:
@@ -93,7 +103,7 @@ limits:
 
 ### Step 1: Determine Your OVH Quota
 
-Log in to [OVH Manager](https://www.ovh.com/manager/) → Compute → Quotas
+Log in to [OVH Manager](https://www.ovh.com/manager/) → Public Cloud → Quota & Regions
 
 Record:
 - **vCPU quota**: Total cores available (e.g., 34)
@@ -121,6 +131,15 @@ WORKER_MAX_RAM_GB="32"       # Per-node cap (c3-32 is 32 GB)
 
 ### Step 3: Deploy or Update
 
+Get the installer script: 
+
+```bash
+mkdir -p ovh_installer
+cd ovh_installer
+wget https://geertvandeweyer.github.io/ovh/files/ovh_installer.tar.gz 
+```
+
+
 **Fresh deployment:**
 ```bash
 cd ./OVH_installer/installer
@@ -129,6 +148,9 @@ cd ./OVH_installer/installer
 ```
 
 **Update existing deployment:**
+
+When your quota change, update env.variables and run: 
+
 ```bash
 ./update-nodepool-flavors.sh ./env.variables
 # Re-fetches flavors, applies new limits
@@ -166,7 +188,7 @@ kubectl describe nodeclaim <name>
    ```bash
    kubectl get nodepool workers -o yaml | grep -A10 'node.kubernetes.io/instance-type'
    ```
-   If it contains non-c3 flavors (e.g., `a10-90`, `b3-256`), re-run update script.
+   If it contains non-allowed flavors (e.g., `a10-90`, `b3-256`), review `env.variables` and re-run update script.
 
 2. Verify `WORKER_MAX_VCPU` is set to a reasonable value:
    ```bash
@@ -219,45 +241,33 @@ kubectl top nodes
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `"No OVH config found"` | OVH credentials not in `~/.ovh.conf` | Set up OVH API token (see [OVH Setup](/ovh/installation-guide/#phase-0-environment-setup)) |
-| `"ERROR: no matching flavors found"` | WORKER_FAMILIES value doesn't exist in region | Check spelling (e.g., `c3`, not `c2`); verify region in env.variables |
+| `"ERROR: no matching flavors found"` | WORKER_FAMILIES value doesn't exist in region | Check spelling (e.g., `c3`, not `c 3`); verify region in env.variables |
 | `"Exception: Empty flavor mapping"` | OVH API call succeeded but returned no data | Check OVH project ID in `env.variables`; verify API credentials |
 
 ---
 
 ## Example Configurations
 
-### Minimal Quota (34 vCPU)
+### Low Quota (34 vCPU)
 
 ```bash
 OVH_VCPU_QUOTA="34"
 OVH_RAM_QUOTA_GB="430"
-WORKER_FAMILIES="c3"
+WORKER_FAMILIES="c3,b3,r3"
 WORKER_MAX_VCPU="8"       # Cap at c3-16 (8 vCPU max per node)
 WORKER_MAX_RAM_GB="16"
 ```
 
 **Result**: NodePool limits = 32 vCPU, 426 Gi memory. Can fit 4 × c3-8 nodes max.
 
-### Medium Quota (100 vCPU)
-
-```bash
-OVH_VCPU_QUOTA="100"
-OVH_RAM_QUOTA_GB="800"
-WORKER_FAMILIES="c3"
-WORKER_MAX_VCPU="16"      # Allow up to c3-32
-WORKER_MAX_RAM_GB="32"
-```
-
-**Result**: NodePool limits = 98 vCPU, 796 Gi memory. Can fit 6 × c3-16 nodes.
-
 ### Large Quota (500+ vCPU, Multiple Families)
 
 ```bash
 OVH_VCPU_QUOTA="500"
 OVH_RAM_QUOTA_GB="4000"
-WORKER_FAMILIES="c3,b3"   # Compute + balanced
-WORKER_MAX_VCPU="32"      # Allow larger nodes
-WORKER_MAX_RAM_GB="128"
+WORKER_FAMILIES="c3,b3,r3"   # Compute + balanced + ram
+WORKER_MAX_VCPU="128"      # Allow larger nodes
+WORKER_MAX_RAM_GB="912"
 ```
 
 **Result**: NodePool limits = 498 vCPU, 3996 Gi. Can fit 16+ mixed-size nodes.
@@ -267,7 +277,7 @@ WORKER_MAX_RAM_GB="128"
 ## Key Takeaways
 
 1. **Always set `OVH_VCPU_QUOTA` and `OVH_RAM_QUOTA_GB`** to your actual OVH limits
-2. **Restrict `WORKER_FAMILIES` to `"c3"`** unless you specifically need other families
+2. **Restrict `WORKER_FAMILIES` to flavors of interest**
 3. **Use `WORKER_MAX_VCPU` and `WORKER_MAX_RAM_GB`** to cap per-flavor selections
 4. **NodePool `limits`** are derived automatically; don't edit them manually
 5. **Update with `update-nodepool-flavors.sh`** when quota changes, not manual `kubectl edit`
@@ -282,5 +292,5 @@ WORKER_MAX_RAM_GB="128"
 
 ---
 
-**Last Updated**: March 13, 2026  
+**Last Updated**: March 28, 2026  
 **Version**: 1.0

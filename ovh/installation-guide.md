@@ -1158,7 +1158,7 @@ curl -s http://localhost:7900/api/workflows/v1 | python3 -m json.tool
 # Submit a test workflow (see cromwell section)
 ```
 
-### ✅ Phase 6 Checklist
+### ✅ Phase 7 Checklist
 
 - [ ] cromwell-tes.conf examples are rendered with correct endpoints
 - [ ] Cromwell can be started successfully (check cromwell.log)
@@ -1168,112 +1168,66 @@ curl -s http://localhost:7900/api/workflows/v1 | python3 -m json.tool
 
 ## Phase 8: Verification & Testing
 
-### Smoke Test: Submit EfsTest Workflow
+### Smoke Test: Submit Test Pods
 
-This WDL workflow tests:
-- NFS mount visibility inside task containers
-- Read/write access to `/mnt/shared`
-- S3 bucket access for task submission
-
-#### WDL Workflow Code
-
-File: `wdl/efs.wdl`
-
-```wdl
-version 1.0
-
-workflow EfsTest {
-  call write_to_efs
-}
-
-task write_to_efs {
-  command <<<
-    echo "Testing /mnt/shared mount..."
-    df -h /mnt/shared
-    
-    mkdir -p /mnt/shared/gra9/test
-    date "+%Y%m%d-%H%M%S" > /mnt/shared/gra9/test/$(date +%Y%m%d-%H%M%S).txt
-    
-    echo "File written:"
-    ls -la /mnt/shared/gra9/test/
-  >>>
-  
-  output {
-    Array[String] log = read_lines(stdout())
-  }
-  
-  runtime {
-    docker: "public.ecr.aws/lts/ubuntu:latest"
-    cpu: 1
-    memory: "512 MB"
-    disk: "1 GB"
-  }
-}
-```
-
-#### Submission
+The installer will execute the included test script: 
 
 ```bash
-cd OVH_installer
-
-# Set Cromwell endpoint
-export CROMWELL_URL=http://localhost:7900
-
-# Submit workflow
-curl -s http://localhost:7900/api/workflows/v1 -X POST \
-  -F "workflowSource=@wdl/efs.wdl" \
-  -F "workflowInputs=@wdl/efs.inputs.json" \
-  -F "workflowOptions=@wdl/efs.options.json" | python3 -m json.tool
-
-# Expected output:
-# {
-#   "id": "29f532f3-9c94-44be-b258-0621db45e89d",
-#   "status": "Submitted"
-# }
+./test-disk-handling.sh
 ```
 
-#### Monitoring
+These tests will :
+- check NFS mount visibility inside task containers
+- check read/write access to `/mnt/shared`
+- check cleanup of worker disks
+
+To monitor manually during testing,  run this watch : 
 
 ```bash
-# Store the workflow ID
-WF_ID="29f532f3-9c94-44be-b258-0621db45e89d"
-
-# Poll status
-watch -n 5 "curl -s http://localhost:7900/api/workflows/v1/$WF_ID/status | python3 -m json.tool"
-
-# Check Funnel task status
-kubectl logs -n funnel -l app=funnel-worker | tail -50
-
-# Check worker node status
-kubectl get pods -n funnel -o wide
+watch -n 1 'kubectl get nodes -o wide ; echo "" ; echo "" ; kubectl get pods -o wide -n funnel ; echo "" ; echo ""; openstack volume list  -c Name -c Size -c status -c "Attached to" '
 ```
 
-#### Expected Output
+#### Expected Execution Output
 
-After ~30-60 seconds:
+Tests are launched: 
 
-```json
-{
-  "id": "29f532f3-9c94-44be-b258-0621db45e89d",
-  "status": "Succeeded"
-}
-```
+```bash 
+── Step 0: Baseline Cinder volumes ──────────────────────────────
+[OK]    No pre-existing funnel Cinder volumes — clean baseline.
 
-**Task output confirms NFS is working:**
+── Step 1: Set Karpenter consolidateAfter=1m ──
+nodepool.karpenter.sh/workers patched
+[OK]    consolidateAfter set to 1m (was 5m)
 
-```
-  "outputs": {
-    "EfsTest.write_to_efs.log": [
-      "Testing /mnt/shared mount...",
-      "Filesystem     Size Used Avail Use% Mounted on",
-      "192.168.100.56:/shares/share-eb3a91cb-210b-4955-8b51-97045c7b1692 147G 2.0M 140G 1% /mnt/shared",
-      "total 4",
-      "-rw-r--r-- 1 root root 387 Mar 12 14:35 20260312-145531.txt"
-    ]
-  }
-```
+── Step 2: Submit tasks ─────────────────────────────────────────
+[OK]    Task A (hello):      d72jlq3tms2s73aul7jg
+[OK]    Task B (disk-write): d72jlq3tms2s73aul7k0
+[OK]    Task C (nfs-check):  d72jlq3tms2s73aul7kg
 
-✅ **NFS is working correctly inside task containers!**
+[OK]    Task D (nfs-race):   d72jlq3tms2s73aul7l0
+
+``` 
+
+Followed by status updates, untill cleanup: 
+
+```bash
+── Step 4: Wait for tasks to complete ──────────────────────────
+[OK]    Task A (hello)       COMPLETE
+[OK]    Task B (disk-write)  COMPLETE
+[OK]    Task C (nfs-check)   COMPLETE
+[OK]    Task D (nfs-race)    COMPLETE
+
+# ... some task output ... 
+
+
+
+### Potential Issues
+
+- No Nodes are starting : The in-browser authentication was not successfull:
+  - `clear` : sed -i 's/^KARPENTER_CONSUMER_KEY=.*/KARPENTER_CONSUMER_KEY=""/' env.variables
+  - `reset` : ./install-ovh-mks.sh
+
+
 
 ### Full Verification Checklist
 

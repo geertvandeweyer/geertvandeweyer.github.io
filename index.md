@@ -13,7 +13,8 @@ extra_css:
 
 > Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service based on this, partially cloud agnostic, documentation.
 
-<span style="font-size: 0.85rem;">* This might be a bit optimistic. The documentation was written based on work on both AWS EKS and OVHcloud MKS.</span>
+
+<span style="font-size: 0.85rem;">* This might be a bit optimistic. Thi page focuses on AWS EKS and OVHcloud MKS.</span>
 ---
 
 ## 🎯 Project Goal
@@ -27,6 +28,8 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
   - **Auto-scaling**: Karpenter-managed worker pools
 
 ### Architecture
+
+Prior to this setup, I had limited hands-on K8s experience.  The setup described here was achieved using fail-forward and pragmatic decisions, and I'm well aware there might be significant improvement options.  I invite you to provide them througy Pull Requests 😊. 
 
 ```
 ┌──────────────────────────┐
@@ -58,20 +61,20 @@ Run **high-throughput genomic workflows** (WDL/CWL) with:
     └────────────────────┘
 ```
 
-####1. Cloud-Agnostic Core
+#### 1. Cloud-Agnostic Core
 
   - **TES, Cromwell, Karpenter** work on any Kubernetes
   - Documentation tries to separate platform-agnostic from platform-specific
 
 
-####2. Modular Components
+#### 2. Modular Components
 
   - Swap storage (NFS ↔ S3 ↔ EFS)
   - Swap compute (OVH ↔ AWS (↔ GCP))
   - Swap autoscaling (Karpenter ↔ Cloud-Managed)
 
 
-####3. Storage Strategy (DaemonSet Pattern)
+#### 3. Storage Strategy (DaemonSet Pattern)
 
 ```
 DaemonSet (on every node)
@@ -84,7 +87,7 @@ Task Pods
   └─ No unmounting on exit (DaemonSet owns lifecycle)
 ```
 
-####4. Auto-scaling (Karpenter)
+#### 4. Auto-scaling (Karpenter)
 
 Karpenter can be configured to select nodes from a preselected list of instance types
 
@@ -94,11 +97,11 @@ Monitor pod queue → Insufficient resources → Scale up nodes
 ```
 
 
-####5. Cost Optimization
+#### 5. Cost Optimization
 
 This deployment was built with routine genomics pipelines in mind. In this setting, data comes in spikes (sequencing machines finish), and are time critical. Therefore, we aimed for: 
 
-  - Nodes scaling to (near) zero when idle
+  - Nodes scaling to (near) zero when idle + keep cromwell out of the K8s ecosystem
   - Use spot instances with robust retries where available
   - Prevent localization of static data where possible (reference data)
   - Provide access to wide ranges of instance types
@@ -123,7 +126,7 @@ Documentation of work-in-progress improvements to upstream repositories:
 
 ---
 
-## �📖 How to Use This Documentation
+## 📖 How to Use This Documentation
 
 The documentation is organized as two main deployment examples : OVHcloud and AWS.  Next there are a couple of pages describing setups in more detail. 
 
@@ -186,14 +189,14 @@ kubectl, openstack, aws CLI commands, common tasks, troubleshooting.
 
 ## 📊 Status & Maintenance
 
-| Component | Status | Tested | Maintained |
-|-----------|--------|--------|------------|
-| **OVHcloud Deployment** | ✅ Production | OVH MKS 1.31.13 | Yes |
-| **AWS Deployment** | 📋 Template | Not yet | Coming |
-| **Funnel TES** | ✅ Functional | Yes | Yes |
-| **Cromwell** | ✅ Functional | Yes | Yes |
-| **Karpenter OVH** | ✅ Functional | Yes | Yes |
-| **Karpenter AWS** | 📋 Template | Not yet | Coming |
+| Component | Status | Tested |
+|-----------|--------|--------|
+| **OVHcloud Deployment** | ✅ Production | OVH MKS 1.34 |
+| **AWS Deployment** | 📋 Template | Not yet |
+| **Funnel TES** | ✅ Functional ([https://github.com/ohsu-comp-bio/funnel/pull/1357/](PR#1357)) | Yes |
+| **Cromwell** | ✅ Functional ([https://github.com/broadinstitute/cromwell/pull/7858](PR#7858)) | Yes |
+| **Karpenter OVH** | ✅ Functional [https://github.com/antonin-a/karpenter-provider-ovhcloud/pull/1](PR#1)) | Yes |
+| **Karpenter AWS** | 📋 Template | Not yet |
 
 ---
 
@@ -222,8 +225,8 @@ See platform-specific guides for detailed security setup.
 
 
 
-**Last Updated**: March 19, 2026  
-**Version**: 1.0 (Multi-platform)  
+**Last Updated**: March 28, 2026  
+**Version**: 1.0 (OVH testing finished)  
 
 
 

@@ -27,7 +27,7 @@ OVHcloud (GRA9 Region, 1AZ)
 │    └─ Inter-pod communication                    │
 └──────────────────────────────────────────────────┘
          │
-         ├─ MKS Cluster (Kubernetes 1.31.13)
+         ├─ MKS Cluster (Kubernetes 1.34)
          │  ├─ System Node (d2-4, always-on)
          │  │  ├─ Karpenter Provider
          │  │  └─ Funnel Server
@@ -75,7 +75,7 @@ OVHcloud (GRA9 Region, 1AZ)
 - Volume cleanup and node labeling controllers
 - Testing and verification procedures
 
-### [Karpenter OVH Quota Guide](/karpenter/ovh-quota/) ⭐ **Critical for Production**
+### [Karpenter OVH Quota Guide](/ovh/ovh-quota/) ⭐ **Critical for Production**
 - How to prevent 412 InsufficientVCPUsQuota errors
 - Instance-type filtering strategy
 - Quota-aware NodePool configuration
