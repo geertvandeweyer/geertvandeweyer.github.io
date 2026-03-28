@@ -1,7 +1,8 @@
 ---
 layout: default
 title: Karpenter on OVH MKS - Deployment
-parent: OVH
+description: "Details of the OVH-Karpenter setup"
+permalink: /ovh/karpenter-deployment/
 ---
 
 # Karpenter Deployment on OVH MKS
