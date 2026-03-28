@@ -112,13 +112,13 @@ aws --version
 
 ### P.3 eksctl
 
-`eksctl` is the official CLI for creating and managing EKS clusters and node groups. Install the latest release as a standalone binary:
+`eksctl` is the official CLI for creating and managing EKS clusters and node groups. Install as a standalone binary:
 
 ```bash
 BIN_DIR=$(dirname $(which python3))
 mkdir -p eksctl_release && cd eksctl_release
 # pick version: https://github.com/eksctl-io/eksctl/releases
-EKSCTL_VERSION="0.207.0"
+EKSCTL_VERSION="0.224.0"
 curl -sLO "https://github.com/eksctl-io/eksctl/releases/download/v${EKSCTL_VERSION}/eksctl_Linux_amd64.tar.gz"
 tar -zxvf eksctl_Linux_amd64.tar.gz
 mv eksctl "$BIN_DIR"
@@ -128,8 +128,16 @@ cd ..
 Verify:
 ```bash
 eksctl version
-# 0.207.0
+# 0.224.0
 ```
+
+> **Minimum version: 0.224.0** — the Karpenter subnet and security-group discovery tags (`karpenter.sh/discovery`) were auto-applied but silently broken in earlier releases; the fix shipped in v0.224.0 ([#8684](https://github.com/eksctl-io/eksctl/pull/8684)). Older versions will cause Karpenter to fail to provision nodes.
+>
+> Other notable changes in this range (0.207 → 0.224) with no action required:
+> - **v0.215.0**: eksctl now auto-tags the cluster security group with `karpenter.sh/discovery` (previously required manual tagging; still needed the v0.224 fix to work correctly).
+> - **v0.218.0**: eksctl-managed CloudFormation stacks have termination protection enabled by default. `eksctl delete cluster` handles this transparently; avoid deleting the stack manually via the AWS console or CLI.
+> - **v0.219.0 💥**: AL2023 is now the default AMI for all K8s versions (AL2 deprecated). Our cluster template already pins `amiFamily: AmazonLinux2023` explicitly, so behaviour is unchanged.
+> - **v0.222.0**: Default K8s version bumped to 1.34. `env.variables` pins `K8S_VERSION` explicitly, so no impact.
 
 ### P.4 kubectl
 
@@ -152,14 +160,14 @@ kubectl version --client
 
 ### P.5 helm
 
-Helm is the Kubernetes package manager, used to deploy Karpenter and the EFS CSI driver. Install the latest v3 release:
+Helm is the Kubernetes package manager, used to deploy Karpenter and the EFS CSI driver. Install the latest v4 release:
 
 ```bash
 BIN_DIR=$(dirname $(which python3))
 mkdir -p helm_release && cd helm_release
 # pick version: https://github.com/helm/helm/releases
-wget https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
-tar -zxvf helm-v3.17.3-linux-amd64.tar.gz
+wget https://get.helm.sh/helm-v4.1.3-linux-amd64.tar.gz
+tar -zxvf helm-v4.1.3-linux-amd64.tar.gz
 mv linux-amd64/helm "$BIN_DIR"
 cd ..
 ```
@@ -167,8 +175,15 @@ cd ..
 Verify:
 ```bash
 helm version
-# version.BuildInfo{Version:"v3.17.3", ...}
+# version.BuildInfo{Version:"v4.1.3", ...}
 ```
+
+> **Helm 4 vs Helm 3 — what changed for this installer:**
+> - `helm upgrade --install` now defaults to **server-side apply (SSA)** for fresh installs. For Karpenter and the ALB controller this is transparent and improves conflict handling. Re-runs (upgrade path) latch to the previous apply method automatically.
+> - `--atomic` is renamed `--rollback-on-failure`; `--force` is renamed `--force-replace`. The old flags still work but emit deprecation warnings. **Neither flag is used in this installer**, so no action needed.
+> - `helm registry login/logout` must use the bare domain name only (no path). The installer already calls `helm registry logout public.ecr.aws` — correct as-is.
+> - Existing Helm v2 `apiVersion: v1` charts continue to install unchanged.
+> - `helm version` output format is identical to v3 (`version.BuildInfo{...}`).
 
 ### P.6 gettext (envsubst)
 
@@ -218,6 +233,20 @@ The deploying identity needs the following AWS-managed policies (or an equivalen
 | `AmazonEC2ContainerRegistryFullAccess` | Image push to ECR during build phase |
 
 ⭐ A minimal scoped inline policy covering only the resources created by this installer is available at `policies/iam-installer-policy.json`.
+
+> **Deploying identity vs runtime identities — these are separate.**
+> The permissions above are only needed by the person (or CI/CD pipeline) running the installer — a one-time operation. They are **not** embedded in the cluster.
+>
+> Once the cluster is running, every component operates under its own purpose-built, minimally-scoped IAM role created by the installer:
+>
+> | Runtime role | Used by | Scope |
+> |---|---|---|
+> | `KarpenterNodeRole-${CLUSTER_NAME}` | Worker EC2 nodes (instance profile) | ECR pull, EKS node join, SSM, EBS/EFS access |
+> | `${CLUSTER_NAME}-karpenter` | Karpenter controller pod (Pod Identity / IRSA) | EC2 run/terminate, SQS interruption queue — cluster-scoped |
+> | `${CLUSTER_NAME}-iam-role` | Funnel/TES pods (IRSA) | S3 read/write on the task bucket only |
+> | ALB controller role | ALB controller pod (IRSA) | ELB/EC2 management, cluster-scoped |
+>
+> Your admin credentials are not stored in the cluster and are not used after the install completes.
 
 #### Configure credentials
 
@@ -457,17 +486,26 @@ eksctl delete cluster --name TES --region us-east-1
 
 ### Installation
 
-The installer deploys Karpenter via **Helm**:
+The installer deploys Karpenter via **Helm** using the OCI chart from public ECR:
 
 ```bash
 # Automatic (part of install script)
 ./install-eks-karpenter.sh
 
-# Or manual:
-helm repo add karpenter https://charts.karpenter.sh
-helm install karpenter karpenter/karpenter --namespace karpenter --create-namespace \
-  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn=arn:aws:iam::ACCOUNT_ID:role/karpenter-controller"
+# Or manual (see installer for full flag set):
+helm upgrade --install karpenter \
+  oci://public.ecr.aws/karpenter/karpenter \
+  --version "${KARPENTER_VERSION}" \
+  --namespace kube-system \
+  --create-namespace \
+  --set settings.clusterName="${CLUSTER_NAME}" \
+  --set settings.interruptionQueue="${CLUSTER_NAME}" \
+  --set replicas=1 \
+  --wait --timeout 10m
 ```
+
+> The chart is hosted on **public ECR** (`public.ecr.aws/karpenter/karpenter`) as an OCI artefact — not on `charts.karpenter.sh` (legacy, pre-v1 only). No `helm repo add` step is needed for OCI charts.
+> IAM is wired via **Pod Identity Association** (set in `cluster.template.yaml` and created by `eksctl`), not via the old IRSA service-account annotation.
 
 ### Karpenter NodePool Configuration
 
