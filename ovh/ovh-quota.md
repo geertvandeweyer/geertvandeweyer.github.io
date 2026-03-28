@@ -240,7 +240,7 @@ kubectl top nodes
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `"No OVH config found"` | OVH credentials not in `~/.ovh.conf` | Set up OVH API token (see [OVH Setup](/ovh/installation-guide/#phase-0-environment-setup)) |
+| `"No OVH config found"` | OVH credentials not in `~/.ovh.conf` | Set up OVH API token (see [OVH Setup](ovh/installation-guide/#prerequisites)) |
 | `"ERROR: no matching flavors found"` | WORKER_FAMILIES value doesn't exist in region | Check spelling (e.g., `c3`, not `c 3`); verify region in env.variables |
 | `"Exception: Empty flavor mapping"` | OVH API call succeeded but returned no data | Check OVH project ID in `env.variables`; verify API credentials |
 

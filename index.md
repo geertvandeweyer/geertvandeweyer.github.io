@@ -193,9 +193,9 @@ kubectl, openstack, aws CLI commands, common tasks, troubleshooting.
 |-----------|--------|--------|
 | **OVHcloud Deployment** | ✅ Production | OVH MKS 1.34 |
 | **AWS Deployment** | 📋 Template | Not yet |
-| **Funnel TES** | ✅ Functional ([https://github.com/ohsu-comp-bio/funnel/pull/1357/](PR#1357)) | Yes |
-| **Cromwell** | ✅ Functional ([https://github.com/broadinstitute/cromwell/pull/7858](PR#7858)) | Yes |
-| **Karpenter OVH** | ✅ Functional [https://github.com/antonin-a/karpenter-provider-ovhcloud/pull/1](PR#1)) | Yes |
+| **Funnel TES** | ✅ Functional ([PR#1357](https://github.com/ohsu-comp-bio/funnel/pull/1357/)) | Yes |
+| **Cromwell** | ✅ Functional ([PR#7858](https://github.com/broadinstitute/cromwell/pull/7858)) | Yes |
+| **Karpenter OVH** | ✅ Functional ([PR#1](https://github.com/antonin-a/karpenter-provider-ovhcloud/pull/1)) | Yes |
 | **Karpenter AWS** | 📋 Template | Not yet |
 
 ---
