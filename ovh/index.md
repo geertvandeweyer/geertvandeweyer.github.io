@@ -74,12 +74,6 @@ OVHcloud (GRA9 Region, 1AZ)
 - Quota-aware NodePool configuration
 - Per-flavor vCPU/RAM caps
 
-### [Karpenter Deployment](/ovh/karpenter-deployment/)
-- Current deployment status and configuration
-- Cluster and node setup details
-- NodePool disruption policy and consolidation
-- Volume cleanup and node labeling controllers
-- Testing and verification procedures
 
 ### [OVH CLI Guide](/ovh/cli-guide/)
 - OpenStack CLI commands

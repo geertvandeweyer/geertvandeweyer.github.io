@@ -11,10 +11,10 @@ extra_css:
 
 **A comprehensive platform for genomic workflow orchestration on any* cloud**
 
-> Deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service based on this, partially cloud agnostic, documentation.
+This page describes steps taken to deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service.  We discuss setup, configuration to give special attention, and try to make cost estimates for running genomics analysis on this platform. 
 
 
-<span style="font-size: 0.85rem;">* This might be a bit optimistic. Thi page focuses on AWS EKS and OVHcloud MKS.</span>
+>* This might be a bit optimistic. Thi page focuses on AWS EKS and OVHcloud MKS.
 ---
 
 ## 🎯 Project Goal
