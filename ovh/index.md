@@ -68,18 +68,18 @@ OVHcloud (GRA9 Region, 1AZ)
 - Storage configuration (Manila NFS, Cinder volumes)
 - Time estimate: **~65 minutes**
 
+### [Karpenter OVH Quota Guide](/ovh/ovh-quota/) ⭐ **Critical for Production**
+- How to prevent 412 InsufficientVCPUsQuota errors
+- Instance-type filtering strategy
+- Quota-aware NodePool configuration
+- Per-flavor vCPU/RAM caps
+
 ### [Karpenter Deployment](/ovh/karpenter-deployment/)
 - Current deployment status and configuration
 - Cluster and node setup details
 - NodePool disruption policy and consolidation
 - Volume cleanup and node labeling controllers
 - Testing and verification procedures
-
-### [Karpenter OVH Quota Guide](/ovh/ovh-quota/) ⭐ **Critical for Production**
-- How to prevent 412 InsufficientVCPUsQuota errors
-- Instance-type filtering strategy
-- Quota-aware NodePool configuration
-- Per-flavor vCPU/RAM caps
 
 ### [OVH CLI Guide](/ovh/cli-guide/)
 - OpenStack CLI commands
@@ -94,93 +94,24 @@ OVHcloud (GRA9 Region, 1AZ)
 - Flavor recommendations
 - Scaling limits & optimization
 
-### [Troubleshooting](/ovh/troubleshooting/)
-- OVH-specific issues
-- Network connectivity problems
-- NFS mount failures
-- LUKS encryption issues
-
----
-
-
-## Installation overview
-
-
-**[Phase 0: Environment Setup](/ovh/installation-guide/#phase-0)** (5 min)
-- OVH account verification
-- API credentials
-- Local tool installation
-
-**[Phase 1: Create MKS Cluster](/ovh/installation-guide/#phase-1)** (15 min)
-- Networking setup (vRack)
-- Cluster creation
-- KUBECONFIG configuration
-
-**[Phase 2: Node Pools & Karpenter](/ovh/installation-guide/#phase-2)** (10 min)
-- System node creation
-- Worker node pool setup
-- Karpenter installation & configuration
-
-**[Phase 3: Manila NFS Storage](/ovh/installation-guide/#phase-3)** (10 min)
-- NFS share creation
-- Access grant configuration
-- DaemonSet mount setup
-
-**[Phase 4: S3 Object Storage](/ovh/installation-guide/#phase-4)** (5 min)
-- S3 bucket creation
-- Service account credentials
-- AWS CLI configuration
-
-**[Phase 5: Deploy Funnel TES](/ovh/installation-guide/#phase-5)** (10 min)
-- ConfigMap rendering
-- Deployment creation
-- Service verification
-
-**[Phase 6: Deploy Cromwell](/ovh/installation-guide/#phase-6)** (5 min)
-- Configuration setup
-- Deployment creation
-- Cromwell verification
-
-**[Phase 7: Smoke Tests](/ovh/installation-guide/#phase-7)** (5 min)
-- Test workflow submission
-- Task execution verification
-- Output validation
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-**NFS mount failing?**
-→ See [NFS Troubleshooting](/ovh/troubleshooting/#nfs-issues)
-
-**Nodes not scaling?**
-→ See [Karpenter Issues](/ovh/troubleshooting/#karpenter-scaling)
-
-**S3 access denied?**
-→ See [S3 Access Issues](/ovh/troubleshooting/#s3-access)
-
-**LUKS key management?**
-→ See [LUKS Encryption](/ovh/troubleshooting/#luks-encryption)
 
 ---
 
 
 ## Production Checklist
 
-- [x] Installation verified (tested March 13, 2026)
+- [x] Installation verified (tested March 23, 2026)
 - [x] NFS mount propagation working (DaemonSet pattern)
 - [x] Karpenter auto-scaling working
 - [x] LUKS encryption enabled
 - [x] S3 access configured
 - [x] Cromwell-Funnel integration tested
 - [x] Workflow execution verified
-- [x] Cost monitoring setup
+- [x] Cost benchmarking runs
 
 ---
 
 **Status**: ✅ **Production-Ready**  
-**Last Updated**: March 19, 2026  
-**Version**: 2.0 (Multi-platform)  
-**Tested On**: OVHcloud MKS 1.31.13, GRA9 region
+**Last Updated**: March 28, 2026  
+**Version**: 1.0 (OVH ready)  
+**Tested On**: OVHcloud MKS 1.34, GRA9 region
