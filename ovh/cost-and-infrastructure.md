@@ -72,35 +72,35 @@ Karpenter spins up `b3`/`c3` worker nodes on demand and terminates them after ta
 |---|---|---|
 | S3 during analysis (50 GB × 2 h) | **~€0.001** | €0.00000972/GiB/hr × 50 × 2 — negligible |
 | S3 egress | **€0** | Outgoing public traffic is free in GRA |
-| S3 long-term retention (5 GB cold archive) | **~€0.02 / month** | Infrequent Access class (GRA); €0.004/GiB/month; only final results kept |
+| S3 long-term retention (5 GB cold archive) | **~€0.008 / month** | Cold Archive (PAR); €0.00000228/GiB/hr × 730 h; only final results kept |
 
 ### Per-Sample Total
 
 | Scenario | Cost |
 |---|---|
 | Analysis only (results extracted + S3 purged) | **~€1.12–1.15** |
-| + 1 month cold archive (5 GB, Infrequent Access) | **~€1.14–1.17** |
+| + 1 month cold archive (5 GB, Cold Archive PAR) | **~€1.13** |
 
 ### Long-Term Archive Accumulation (6 000 Samples / Year)
 
-Assuming 6 000 WES samples archived per year, each retaining **5 GB** in the **Infrequent Access** storage class (~€0.004/GiB/month in GRA). Archive grows linearly; monthly rate increases each year as the corpus grows.
+Assuming 6 000 WES samples archived per year, each retaining **5 GB** in **Cold Archive** (€0.00000228/GiB/hr, PAR region). Archive grows linearly; the monthly rate at end of year N = N × 6 000 × 5 GiB × €0.001664/GiB/month ≈ **N × €50/month**. Annual cost uses the average monthly rate for that year.
 
-| End of Year | Samples Archived | Total Stored | Monthly Rate | Annual Cost | Cumulative Cost |
+| End of Year | Samples Archived | Total Stored | Monthly Rate (end of year) | Annual Cost | Cumulative Cost |
 |---|---|---|---|---|---|
-| 1 | 6 000 | 30 TB | ~€120 | ~€720 | **~€720** |
-| 2 | 12 000 | 60 TB | ~€240 | ~€2 160 | **~€2 880** |
-| 3 | 18 000 | 90 TB | ~€360 | ~€3 600 | **~€6 480** |
-| 4 | 24 000 | 120 TB | ~€480 | ~€5 040 | **~€11 520** |
-| 5 | 30 000 | 150 TB | ~€600 | ~€6 480 | **~€18 000** |
-| 6 | 36 000 | 180 TB | ~€720 | ~€7 920 | **~€25 920** |
-| 7 | 42 000 | 210 TB | ~€840 | ~€9 360 | **~€35 280** |
-| 8 | 48 000 | 240 TB | ~€960 | ~€10 800 | **~€46 080** |
-| 9 | 54 000 | 270 TB | ~€1 080 | ~€12 240 | **~€58 320** |
-| 10 | 60 000 | 300 TB | ~€1 200 | ~€13 680 | **~€72 000** |
+| 1 | 6 000 | 30 TB | ~€50 | ~€300 | **~€300** |
+| 2 | 12 000 | 60 TB | ~€100 | ~€900 | **~€1 200** |
+| 3 | 18 000 | 90 TB | ~€150 | ~€1 500 | **~€2 700** |
+| 4 | 24 000 | 120 TB | ~€200 | ~€2 100 | **~€4 800** |
+| 5 | 30 000 | 150 TB | ~€250 | ~€2 700 | **~€7 500** |
+| 6 | 36 000 | 180 TB | ~€300 | ~€3 300 | **~€10 800** |
+| 7 | 42 000 | 210 TB | ~€350 | ~€3 900 | **~€14 700** |
+| 8 | 48 000 | 240 TB | ~€400 | ~€4 500 | **~€19 200** |
+| 9 | 54 000 | 270 TB | ~€450 | ~€5 100 | **~€24 300** |
+| 10 | 60 000 | 300 TB | ~€500 | ~€5 700 | **~€30 000** |
 
-> **Cold Archive (Paris only):** OVH Cold Archive (~€0.0017/GiB/month) is cheaper but only available in `PAR` (Paris), not GRA9. If data locality is not a concern, migrating archives to Paris cuts the 10-year cumulative cost to **~€30 600** — less than half. Retrieval is charged at €0.009/GiB when data is restored.
+> **Region:** OVH Cold Archive is only available in `PAR` (Paris), **not** in GRA9. S3 objects must be moved/written to a PAR bucket. Cross-region writes from GRA9 are free (ingress included); retrieval is charged at **€0.009/GiB**.
 
-> **Minimum storage:** Infrequent Access has a **30-day minimum** storage commitment per object. Deleting earlier is charged for the full 30-day period.
+> **Minimum storage:** Cold Archive has a **180-day minimum** storage commitment per object. Deleting earlier triggers a charge for the remaining days at the cold archive rate.
 
 ---
 
@@ -126,7 +126,7 @@ At higher throughput the baseline becomes negligible and the effective cost conv
 - **Scale-to-zero workers:** Karpenter removes idle worker nodes within minutes of task completion. You only pay for actual compute time, not standby capacity.
 - **MKS Free tier:** The free control plane (max 100 concurrent nodes) is sufficient for most bioinformatics workloads. Upgrading to Standard adds ~€70 / month for multi-AZ redundancy.
 - **Manila NFS free beta:** The 150 GB NFS share is currently free. Consider provisioning a larger share now while pricing is zero if scratch space becomes a bottleneck.
-- **S3 data lifecycle:** Enable OVH S3 lifecycle policies to auto-expire all intermediate files after analysis. Archive only final results (5 GB / sample) using the **Infrequent Access** storage class (~€0.02/sample/month). Keeping the full 50 GB scratch data would add ~€0.36/sample/month — a 18× overhead vs. archiving results only.
+- **S3 data lifecycle:** Enable OVH S3 lifecycle policies to auto-expire all intermediate files after analysis. Archive only final results (5 GB / sample) to the **Cold Archive** class in PAR (~€0.008/sample/month). Keeping the full 50 GB scratch data in Standard S3 would add ~€0.36/sample/month — a 45× overhead vs. cold-archiving results only.
 - **Egress is free:** Downloading analysis results (BAM, VCF, etc.) from S3 to your institution does not incur OVH charges in GRA.
 - **MPR plan selection:** The S plan (200 GB, ~€17.30 / month) is the dominant baseline cost item. It is flat-rate regardless of usage. If the image catalog stays small, this is sufficient; there is no pay-per-pull model.
 - **Block Storage cleanup:** Cinder volumes are LUKS-encrypted and auto-cleaned by Funnel after task completion. Verify cleanup is working to avoid orphaned volumes accumulating cost (High Speed Gen2: €0.000119/GiB/hr).
