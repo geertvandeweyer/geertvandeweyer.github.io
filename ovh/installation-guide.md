@@ -1,7 +1,7 @@
 ---
 layout: default
 title: "Installation Guide"
-description: "7-phase deployment guide for OVHcloud MKS + Funnel + Cromwell"
+description: "8-phase deployment guide for OVHcloud MKS + Funnel + Cromwell"
 permalink: /ovh/installation-guide/
 ---
 
@@ -13,17 +13,20 @@ permalink: /ovh/installation-guide/
 
 1. [Overview & Architecture](#overview--architecture)
 2. [Prerequisites](#prerequisites)
-3. [Phase 0: Environment Setup](#phase-0-environment-setup)
-4. [Phase 1: Create MKS Cluster](#phase-1-create-mks-cluster)
-5. [Phase 2: Node Pools & Autoscaling](#phase-2-node-pools--autoscaling)
-6. [Phase 3: Manila NFS Shared Storage](#phase-3-manila-nfs-shared-storage)
-7. [Phase 4: S3 Object Storage](#phase-4-s3-object-storage)
-8. [Phase 4.5: Private Container Registry](#phase-45-private-container-registry)
-9. [Phase 5: Deploy Funnel TES](#phase-5-deploy-funnel-tes)
-10. [Phase 6: Configure Cromwell](#phase-6-configure-cromwell)
-11. [Phase 7: Verification & Testing](#phase-7-verification--testing)
-12. [Container Images](#container-images)
-13. [Troubleshooting](#troubleshooting)
+3. [Environment Setup](#environment-setup)
+4. [Deploy Cluster](#deploy-cluster)
+5. [Phase 1: Create MKS Cluster](#phase-1-create-mks-cluster)
+6. [Phase 2: Node Pools & Autoscaling](#phase-2-node-pools--autoscaling)
+7. [Phase 3: Manila NFS Shared Storage](#phase-3-manila-nfs-shared-storage)
+8. [Phase 4: S3 Object Storage](#phase-4-s3-object-storage)
+9. [Phase 5: Private Container Registry](#phase-5-private-container-registry)
+10. [Phase 6: Deploy Funnel TES](#phase-6-deploy-funnel-tes)
+11. [Phase 7: Configure Cromwell](#phase-7-configure-cromwell)
+12. [Phase 8: Verification & Testing](#phase-8-verification--testing)
+13. [Container Images](#container-images)
+14. [Troubleshooting](#troubleshooting)
+15. [Appendix: Useful Commands](#appendix-useful-commands)
+16. [Summary](#summary)
 
 ---
 
