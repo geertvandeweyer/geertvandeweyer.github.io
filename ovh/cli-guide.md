@@ -9,9 +9,7 @@ permalink: /ovh/cli-guide/
 
 This page documents all **OVHcloud** (`ovhcloud`) and **OpenStack** (`openstack`) CLI commands used in the deployment and operation of the Cromwell + Funnel TES platform on OVHcloud MKS.
 
-> **Prerequisites:** All commands require authentication. For `ovhcloud`, run `ovhcloud login` once before use. For `openstack`, source a `clouds.yaml` (`export OS_CLOUD=<cloud-name>`) generated from the OVHcloud Manager (Public Cloud → Users & Roles → Download OpenStack configuration file). Both CLIs must be installed in the active micromamba `ovh` environment.
-
-> **Note on access errors:** If a command returns an authentication or authorization error, verify that `ovhcloud login` was completed, that `~/.ovh.conf` exists with valid credentials, and that the OpenStack `clouds.yaml` is sourced correctly. Most API calls below require the project-level `cloud_compute` or `cloud_network` roles assigned to the OVH cloud user.
+> **Note on access errors:** If a command returns an authentication or authorization error, verify that `ovhcloud login` was completed, that `~/.ovh.conf` exists with valid credentials, and that the OpenStack `clouds.yaml` is sourced correctly. Most API calls below require the project-level `cloud_compute` or `cloud_network` roles assigned to the OVH cloud user. See [Installation Prerequisites](ovh/installation-guide/#prerequisites) for details.
 
 ---
 
