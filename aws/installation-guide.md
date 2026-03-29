@@ -317,7 +317,7 @@ Edit `env.variables`. Review and complete all settings — no shell logic belong
 |---------------|-------|
 | `CLUSTER_NAME` | Name for the EKS cluster (used as prefix for all created resources) |
 | `AWS_DEFAULT_REGION` | Target AWS region (e.g. `eu-north-1`) |
-| `K8S_VERSION` | Tested with 1.31 and 1.34 |
+| `K8S_VERSION` | Tested with 1.34 |
 | `SYSTEM_NODE_TYPE` | Always-on bootstrap node; `t4g.medium` (ARM64) keeps the permanent cost minimal |
 | `WORKER_INSTANCE_FAMILIES` | Comma-separated EC2 category letters: `c`=compute, `m`=general, `r`=memory, `i`=storage |
 | `WORKER_MIN_GENERATION` | Minimum instance generation (e.g. `3` → c3+, m3+, r3+) |
@@ -343,12 +343,9 @@ Edit `env.variables`. Review and complete all settings — no shell logic belong
 > | Variable | Resolved from |
 > |---|---|
 > | `AWS_ACCOUNT_ID` | `aws sts get-caller-identity` |
-> | `ALIAS_VERSION` | SSM `/aws/service/eks/optimized-ami/.../recommended/image_id` → EC2 image name |
-> | `SPOT_QUOTA` | `aws service-quotas` — Standard Spot vCPU quota in the target region |
 > | `FUNNEL_IMAGE` | `${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_IMAGE_REGION}.amazonaws.com/funnel:${TES_VERSION}` |
 > | `TES_S3_BUCKET` | `tes-tasks-${AWS_ACCOUNT_ID}-${AWS_DEFAULT_REGION}` |
 
-A fully-filled example is provided in `env.variables.filled` for reference.
 
 ### E.3: Verify Prerequisites
 
@@ -392,7 +389,7 @@ The installer orchestrates all setup in ordered phases (0–7) to provision AWS 
 
 ```bash
 cd installer/
-./install-eks-karpenter.sh
+./install-aws-eks.sh
 ```
 
 The script prints coloured status lines (`✅` / `⚠` / `💥`) for each phase step and stops on the first unrecoverable error. All behaviour is driven by `env.variables` — re-runs are safe and idempotent.
@@ -404,11 +401,685 @@ The script prints coloured status lines (`✅` / `⚠` / `💥`) for each phase 
 
 ---
 
-## Phase 1: EKS Cluster Creation
+## Phase 1: CloudFormation Prerequisites
 
-The installer uses **CloudFormation** to create EKS infrastructure.
+### Goal
 
-### Automatic (Recommended)
+Deploy the Karpenter prerequisite IAM and eventing infrastructure as a CloudFormation stack before the EKS cluster is created.
+
+### What Gets Created
+
+- IAM role `KarpenterNodeRole-${CLUSTER_NAME}` — instance profile for all Karpenter-provisioned worker nodes
+- Five `KarpenterController*` IAM policies scoped to the cluster — attached to the Karpenter controller role in Phase 4
+- SQS interruption queue named `${CLUSTER_NAME}` — receives Spot interruption and rebalance notices
+- EventBridge rules that forward EC2 Spot interruption, rebalance, health, and state-change events into the queue
+
+### Expected Output
+
+```
+============================================
+ Phase 1: CloudFormation prerequisites
+============================================
+
+Deploying CloudFormation stack for Karpenter prerequisites...
+  1/40 : Stack status: CREATE_IN_PROGRESS — waiting 15s...
+  2/40 : Stack status: CREATE_IN_PROGRESS — waiting 15s...
+  ...
+✅ CloudFormation stack is CREATE_COMPLETE
+```
+
+### Common Issues
+
+- `ROLLBACK_COMPLETE` — usually a missing permission on the deploying IAM identity (`IAMFullAccess` or equivalent required)
+- `CAPABILITY_NAMED_IAM` not passed — the stack creates named IAM roles; the CLI flag is required
+- Stack already in `ROLLBACK_IN_PROGRESS` from a previous failed run — delete the stack manually before retrying:
+  ```bash
+  aws cloudformation delete-stack --stack-name "EKS-${CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}"
+  ```
+
+### Manual Verification
+
+```bash
+# Check stack status
+aws cloudformation describe-stacks \
+  --stack-name "EKS-${CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}" \
+  --query "Stacks[0].StackStatus" --output text
+# Expected: CREATE_COMPLETE
+
+# Confirm KarpenterNodeRole exists
+aws iam get-role --role-name "KarpenterNodeRole-${CLUSTER_NAME}" \
+  --query "Role.Arn" --output text
+
+# Confirm SQS queue exists
+aws sqs get-queue-url --queue-name "${CLUSTER_NAME}" \
+  --region "${AWS_DEFAULT_REGION}" --query "QueueUrl" --output text
+```
+
+### ✅ Phase 1 Checklist
+
+- [ ] CloudFormation stack `EKS-${CLUSTER_NAME}` is `CREATE_COMPLETE`
+- [ ] IAM role `KarpenterNodeRole-${CLUSTER_NAME}` exists
+- [ ] SQS queue `${CLUSTER_NAME}` exists in the target region
+
+---
+
+## Phase 2: EKS Cluster
+
+### Goal
+
+Create the EKS control plane and a single always-on ARM64 baseline node via `eksctl`. This node hosts Karpenter and the Funnel server; all workflow work runs on Karpenter-provisioned Spot nodes.
+
+### What Gets Created
+
+- EKS cluster `${CLUSTER_NAME}` (Kubernetes `${K8S_VERSION}`) with OIDC provider
+- Managed nodegroup `${CLUSTER_NAME}-baseline-arm` — 1× `${SYSTEM_NODE_TYPE}` (ARM64, always-on)
+- Pod Identity Association for the Karpenter controller SA → `${CLUSTER_NAME}-karpenter` IAM role
+- IAM identity mapping so `KarpenterNodeRole-${CLUSTER_NAME}` nodes can join the cluster
+- Addons: `eks-pod-identity-agent`, `vpc-cni`
+- Node labels: `${BOOTSTRAP_LABEL_KEY}=true`, `workload-type=system`
+- VPC subnets tagged `karpenter.sh/discovery=${CLUSTER_NAME}` and `kubernetes.io/cluster/${CLUSTER_NAME}=owned`
+- kubeconfig updated at `~/.kube/config`
+
+### Expected Output
+
+```
+============================================
+ Phase 2: EKS cluster
+============================================
+
+Rendering cluster configuration...
+Creating EKS cluster 'TES' in eu-north-1 (K8s 1.34)...
+2026-03-29 ... creating EKS cluster "TES" in "eu-north-1" region ...
+2026-03-29 ... creating managed nodegroup "TES-baseline-arm" ...
+2026-03-29 ... EKS cluster "TES" in "eu-north-1" region is ready
+Waiting for EKS cluster to reach status 'ACTIVE' (timeout 1800s)...
+  [0s/1800s] EKS cluster status: CREATING — waiting...
+  ...
+✅ EKS cluster is ACTIVE
+✅ Cluster endpoint: https://ABCD1234.gr7.eu-north-1.eks.amazonaws.com
+✅ VPC ID: vpc-0abc1234
+Labeling bootstrap nodes: karpenter.io/bootstrap=true, workload-type=system
+✅ Subnet tags applied
+```
+
+> **Duration**: ~15–20 minutes. `eksctl` polls internally; the `wait_for_status` call after is a belt-and-suspenders check.
+
+### Common Issues
+
+- `eksctl create cluster` hangs or fails — check CloudFormation events for the `eksctl`-managed stack:
+  ```bash
+  aws cloudformation describe-stack-events --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
+    --region "${AWS_DEFAULT_REGION}" --output table
+  ```
+- VPC quota exhausted — default limit is 5 VPCs per region; request an increase or delete unused VPCs
+- Nodegroup stuck `CREATE_FAILED` — typically insufficient EC2 quota for `${SYSTEM_NODE_TYPE}` on-demand instances
+- `cluster.yaml` rendered with blank variables — means `env.variables` was not sourced before calling `envsubst`
+
+### Manual Verification
+
+```bash
+# Check cluster status
+aws eks describe-cluster --name "${CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}" \
+  --query "cluster.status" --output text
+# Expected: ACTIVE
+
+# Check node is Ready and labelled
+kubectl get nodes --show-labels
+# ip-10-0-x-x.eu-north-1.compute.internal  Ready  <none>  ...  karpenter.io/bootstrap=true,...
+
+# Check addons
+aws eks list-addons --cluster-name "${CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}" \
+  --output table
+
+# Check kubeconfig
+kubectl cluster-info
+```
+
+### ✅ Phase 2 Checklist
+
+- [ ] EKS cluster status is `ACTIVE` (`aws eks describe-cluster ...`)
+- [ ] Bootstrap node is `Ready` (`kubectl get nodes`)
+- [ ] Bootstrap node has label `karpenter.io/bootstrap=true`
+- [ ] `kubectl cluster-info` connects successfully
+
+---
+
+## Phase 3: Node IAM Policies
+
+### Goal
+
+Attach the additional inline IAM policies that worker nodes need for EBS autoscale script downloads from S3 and (optionally) EFS mount access. The base `KarpenterNodeRole` created in Phase 1 covers EC2/ECR/EKS join; these policies add the storage-specific permissions.
+
+### What Gets Created
+
+- Inline policy `EBSAutoscaleAndArtifactsPolicy` on `KarpenterNodeRole-${CLUSTER_NAME}` — allows nodes to download autoscale scripts from `${ARTIFACTS_S3_BUCKET}` and call EC2 autoscale APIs
+- Inline policy `EFSClientPolicy` on `KarpenterNodeRole-${CLUSTER_NAME}` — allows `elasticfilesystem:ClientMount` / `ClientWrite` / `DescribeMountTargets` (only when `USE_EFS=true`)
+
+### Expected Output
+
+```
+============================================
+ Phase 3: Node IAM policies
+============================================
+
+Rendering EBS autoscale policy...
+✅ EBSAutoscaleAndArtifactsPolicy attached
+✅ EFSClientPolicy attached
+```
+
+### Common Issues
+
+- Policy document render fails — check that `ARTIFACTS_S3_BUCKET` is set in `env.variables`
+- `NoSuchEntityException` on `put-role-policy` — the CloudFormation stack (Phase 1) did not complete; the role does not exist yet
+
+### Manual Verification
+
+```bash
+# List inline policies on the node role
+aws iam list-role-policies \
+  --role-name "KarpenterNodeRole-${CLUSTER_NAME}" \
+  --output text
+# Expected: EBSAutoscaleAndArtifactsPolicy  (+ EFSClientPolicy if USE_EFS=true)
+```
+
+### ✅ Phase 3 Checklist
+
+- [ ] `EBSAutoscaleAndArtifactsPolicy` is attached to `KarpenterNodeRole-${CLUSTER_NAME}`
+- [ ] `EFSClientPolicy` is attached when `USE_EFS=true`
+
+---
+
+## Phase 4: Karpenter Controller
+
+### Goal
+
+Install the Karpenter controller (Helm, OCI chart from public ECR) onto the bootstrap node, wire its IAM role via IRSA/Pod Identity, and verify it is ready to provision worker nodes.
+
+### What Gets Created
+
+- Karpenter Helm release in namespace `${KARPENTER_NAMESPACE}` — `${KARPENTER_REPLICAS}` replica(s)
+- Controller pinned to the bootstrap node via `nodeSelector: ${BOOTSTRAP_LABEL_KEY}=true`
+- IRSA annotation on the `karpenter` ServiceAccount → `arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-karpenter`
+- Five `KarpenterController*` policies verified as attached to the controller role
+- Funnel namespace `${TES_NAMESPACE}` (created early, needed by later phases)
+
+### Expected Output
+
+```
+============================================
+ Phase 4: Karpenter controller
+============================================
+
+Tagging subnets for Karpenter and ALB discovery...
+✅ Subnet tags applied
+Creating namespace funnel...
+Release "karpenter" does not exist. Installing it now.
+NAME: karpenter
+LAST DEPLOYED: Sun Mar 29 12:00:00 2026
+NAMESPACE: kube-system
+STATUS: deployed
+✅ Karpenter controller installed
+✅ Karpenter SA annotation: arn:aws:iam::123456789012:role/TES-karpenter
+  ✓ KarpenterControllerInterruptionPolicy-TES attached
+  ✓ KarpenterControllerNodeLifecyclePolicy-TES attached
+  ✓ KarpenterControllerIAMIntegrationPolicy-TES attached
+  ✓ KarpenterControllerEKSIntegrationPolicy-TES attached
+  ✓ KarpenterControllerResourceDiscoveryPolicy-TES attached
+✅ Karpenter controller verified
+```
+
+### Common Issues
+
+- Karpenter pod `CrashLoopBackOff` — IRSA annotation missing or wrong; check `kubectl -n kube-system describe sa karpenter`
+- `no subnets found` in Karpenter logs — subnet tags did not propagate; wait 1–2 min and restart the controller: `kubectl -n kube-system rollout restart deployment karpenter`
+- Helm pull fails with `401 Unauthorized` — stale public ECR credentials; the installer calls `helm registry logout public.ecr.aws` first, but retry if needed
+- Pod stays `Pending` — bootstrap node is not yet Ready or taint/nodeSelector mismatch
+
+### Manual Verification
+
+```bash
+# Check Karpenter pod is Running
+kubectl get pods -n kube-system -l app.kubernetes.io/name=karpenter
+# NAME                        READY   STATUS    RESTARTS   AGE
+# karpenter-xxxx-yyyy         1/1     Running   0          2m
+
+# Check IRSA annotation
+kubectl -n kube-system get sa karpenter \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+# arn:aws:iam::123456789012:role/TES-karpenter
+
+# Check logs for errors
+kubectl -n kube-system logs -l app.kubernetes.io/name=karpenter --since=5m | grep -i error
+```
+
+### ✅ Phase 4 Checklist
+
+- [ ] Karpenter pod is `Running` in `${KARPENTER_NAMESPACE}`
+- [ ] `karpenter` ServiceAccount has correct IRSA annotation
+- [ ] All five controller policies are attached to the role
+- [ ] No `error` lines in Karpenter logs
+
+---
+
+## Phase 4.1: Karpenter EC2NodeClass & NodePool
+
+### Goal
+
+Define *how* worker nodes are launched (`EC2NodeClass`) and *what* workloads they accept + how many (`NodePool`). The NodePool's instance-type list is computed at install time from the live EC2 Spot catalog filtered by `env.variables` settings.
+
+### What Happens
+
+This phase:
+
+1. Renders `userdata/workload-node.template.sh` (EBS autoscale setup script for worker nodes)
+2. Injects the rendered userdata into `yamls/karpenter-nodeclass.template.yaml` and applies `EC2NodeClass workload`
+3. Calls `update-nodepool-types.sh` which:
+   - Queries `aws ec2 describe-instance-types --filters "Name=supported-usage-class,Values=spot"`
+   - Filters by `WORKER_INSTANCE_FAMILIES`, `WORKER_MIN_GENERATION`, `WORKER_EXCLUDE_TYPES`, vCPU/RAM caps
+   - Generates a `NodePool workload` YAML with an explicit `node.kubernetes.io/instance-type` In-values list
+   - Sets `limits.cpu = ${SPOT_QUOTA} - 2` (reserves 2 vCPU for the bootstrap node)
+   - Applies with `kubectl apply --server-side --force-conflicts`
+
+### What Gets Created
+
+- `EC2NodeClass workload` — AL2023 AMI alias `${ALIAS_VERSION}`, two EBS volumes (20 GiB root + 100 GiB data at `${EBS_IOPS}`/`${EBS_THROUGHPUT}`), subnet and SG discovery via `karpenter.sh/discovery=${CLUSTER_NAME}` tag
+- `NodePool workload` — Spot-only, explicit instance-type list, `limits.cpu = SPOT_QUOTA - 2`, `consolidateAfter: 5m`, `expireAfter: 168h`
+
+### Expected Output
+
+```
+============================================
+ Phase 4.1: Karpenter EC2NodeClass + NodePool
+============================================
+
+Rendering workload node userdata...
+Rendering EC2NodeClass...
+ec2nodeclass.karpenter.k8s.aws/workload configured
+✅ EC2NodeClass 'workload' applied
+Generating Karpenter NodePool 'workload' with eligible instance types...
+  Querying Spot instance types in eu-north-1...
+  Filtering: families=[c,m,r] min_gen=3 exclude=[metal] vcpu_cap=0 ram_cap=0 min_mem=4096
+  Eligible instance types (42): c3.large, c3.xlarge, c5.large, ...
+  NodePool limits.cpu = 98
+nodepool.karpenter.sh/workload configured
+✅ Karpenter NodePool 'workload' applied
+```
+
+### Configuration Details
+
+Instance selection is driven by `env.variables`:
+
+| Variable | Effect |
+|---|---|
+| `WORKER_INSTANCE_FAMILIES` | First letter(s) of instance type names to include (`c,m,r`) |
+| `WORKER_MIN_GENERATION` | Minimum generation integer (`3` → c5, m6i, r7g are in; c2/m2 are out) |
+| `WORKER_EXCLUDE_TYPES` | Comma-separated substrings to disqualify (e.g. `metal,nano,micro,small,flex`) |
+| `WORKER_MAX_VCPU` | Per-instance vCPU cap; `0` = no cap |
+| `WORKER_MAX_RAM_GIB` | Per-instance RAM cap in GiB; `0` = no cap |
+| `WORKER_MIN_MEMORY_MIB` | Minimum RAM per instance in MiB (e.g. `4096` removes tiny types) |
+| `WORKER_ARCH` | `amd64` / `arm64` / `graviton` / `both` |
+| `WORKER_CPU_VENDOR` | `intel` / `amd` / `both` (only applies when `WORKER_ARCH=amd64`) |
+
+> To regenerate the NodePool after changing quota or instance-family settings without re-running the full installer:
+> ```bash
+> ./update-nodepool-types.sh ./env.variables
+> ```
+
+### Manual Verification
+
+```bash
+# Check EC2NodeClass
+kubectl get ec2nodeclass workload
+
+# Inspect NodePool instance list
+kubectl get nodepool workload \
+  -o jsonpath='{.spec.template.spec.requirements[?(@.key=="node.kubernetes.io/instance-type")].values}' \
+  | python3 -m json.tool
+
+# Check NodePool limits
+kubectl get nodepool workload -o jsonpath='{.spec.limits}' | python3 -m json.tool
+# { "cpu": "98" }
+
+# Check Karpenter logs for NodePool reconciliation
+kubectl -n kube-system logs -l app.kubernetes.io/name=karpenter --since=2m
+```
+
+### ✅ Phase 4.1 Checklist
+
+- [ ] `EC2NodeClass workload` exists and shows `Ready`
+- [ ] `NodePool workload` exists with a non-empty instance-type list
+- [ ] `limits.cpu` matches `SPOT_QUOTA - 2`
+- [ ] Karpenter logs show no provisioning errors
+
+---
+
+## Phase 5: EFS Shared Storage
+
+### Goal
+
+Create an encrypted EFS filesystem and mount it on every worker node at `/mnt/efs` so that shared reference data (e.g. genome indices) is available across all tasks without S3 round-trips.
+
+This phase is optional — set `USE_EFS=false` in `env.variables` to skip it entirely.
+
+### What Gets Created
+
+- EFS filesystem `${CLUSTER_NAME}-efs` (encrypted, Standard tier) — tagged `karpenter.sh/discovery=${CLUSTER_NAME}`
+- `EFS_ID` written back to `env.variables` (for re-runs and the destroy script)
+- EKS addon `aws-efs-csi-driver` scaled to 1 replica on the bootstrap node
+- Kubernetes `StorageClass efs-sc`, `PersistentVolume efs-pv`, `PersistentVolumeClaim efs-pvc` in `${TES_NAMESPACE}`
+- DaemonSet `efs-node-mount` — mounts EFS on each worker node's host filesystem at `/mnt/efs`
+- Security group `efs-mount-sg-${CLUSTER_NAME}` — allows TCP 2049 from the Karpenter node SG and the EKS cluster SG
+- EFS mount targets in each private subnet of the VPC
+
+### Expected Output
+
+```
+============================================
+ Phase 5: EFS shared storage (optional)
+============================================
+
+Creating new EFS filesystem in VPC vpc-0abc1234...
+✅ EFS filesystem created: fs-0bd10f52a04211916
+Installing EFS CSI driver add-on...
+  attempt 1/36: addon status=CREATING — waiting 10s...
+  ...
+✅ EFS CSI Driver add-on ACTIVE
+✅ EFS StorageClass, PV, PVC created
+✅ efs-node-mount DaemonSet applied
+Configuring EFS security groups and mount targets...
+✅ EFS mount targets created
+```
+
+### Common Issues
+
+- Addon stays `DEGRADED` — restart the `efs-csi-controller` deployment: `kubectl -n kube-system rollout restart deployment efs-csi-controller`
+- Mount target creation fails with `subnet already has a mount target` — non-fatal; the installer uses `|| true`; mount target already exists in that AZ
+- Worker pods can't reach EFS — the EFS security group did not allow inbound TCP 2049 from the node SG; verify with `aws ec2 describe-security-group-rules`
+- EFS PVC stuck `Pending` — EFS CSI driver not running or `StorageClass efs-sc` not created
+
+### Manual Verification
+
+```bash
+# Check EFS filesystem
+aws efs describe-file-systems --file-system-id "${EFS_ID}" \
+  --region "${AWS_DEFAULT_REGION}" \
+  --query "FileSystems[0].LifeCycleState" --output text
+# Expected: available
+
+# Check mount targets
+aws efs describe-mount-targets --file-system-id "${EFS_ID}" \
+  --region "${AWS_DEFAULT_REGION}" \
+  --query "MountTargets[].{Subnet:SubnetId,State:LifeCycleState}" --output table
+
+# Check PVC
+kubectl get pvc efs-pvc -n "${TES_NAMESPACE}"
+# NAME       STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+# efs-pvc    Bound    efs-pv   150Gi      RWX            efs-sc         2m
+
+# Check efs-node-mount DaemonSet (only shows desired=0 until workers exist)
+kubectl get daemonset efs-node-mount -n "${TES_NAMESPACE}"
+
+# Verify /mnt/efs is mounted on an existing node
+kubectl debug node/$(kubectl get nodes -o name | head -1 | cut -d/ -f2) \
+  -it --image=busybox -- ls /mnt/efs
+```
+
+### ✅ Phase 5 Checklist
+
+- [ ] EFS filesystem `EFS_ID` is set in `env.variables`
+- [ ] EFS lifecycle state is `available`
+- [ ] Mount targets exist in each private subnet
+- [ ] `efs-pvc` is `Bound` in namespace `${TES_NAMESPACE}`
+- [ ] `efs-node-mount` DaemonSet is deployed
+
+---
+
+## Phase 6: AWS Load Balancer Controller
+
+### Goal
+
+Install the AWS Load Balancer Controller so that the `Ingress tes-ingress` created in Phase 7 provisions an Application Load Balancer (ALB) for the Funnel TES endpoint.
+
+### What Gets Created
+
+- IAM policy `AWSLoadBalancerControllerIAMPolicy` (or reuses existing)
+- IRSA ServiceAccount `aws-load-balancer-controller` in `kube-system` with the policy attached
+- Helm release `aws-load-balancer-controller` (chart `eks/aws-load-balancer-controller` v3.0.0)
+- LB controller CRDs applied from `eks-charts` GitHub
+
+### Expected Output
+
+```
+============================================
+ Phase 6: AWS Load Balancer Controller
+============================================
+
+✅ AWSLoadBalancerControllerIAMPolicy created: arn:aws:iam::123456789012:policy/...
+Release "aws-load-balancer-controller" does not exist. Installing it now.
+NAME: aws-load-balancer-controller
+LAST DEPLOYED: Sun Mar 29 12:15:00 2026
+NAMESPACE: kube-system
+STATUS: deployed
+✅ AWS Load Balancer Controller installed
+```
+
+### Common Issues
+
+- Controller pod `CrashLoopBackOff` — IRSA service account missing or wrong policy ARN
+- ALB not provisioned after Funnel ingress is applied — check controller logs: `kubectl -n kube-system logs -l app.kubernetes.io/name=aws-load-balancer-controller`
+- `Failed to resolve security group` — subnets not tagged with `kubernetes.io/cluster/${CLUSTER_NAME}=owned` (applied in Phase 4)
+- `invalid VPC ID` — `VPC_ID` was not exported from Phase 2; re-run from Phase 2
+
+### Manual Verification
+
+```bash
+# Check controller is Running
+kubectl get deployment -n kube-system aws-load-balancer-controller
+# NAME                           READY   UP-TO-DATE   AVAILABLE   AGE
+# aws-load-balancer-controller   1/1     1            1           3m
+
+# Check IRSA annotation
+kubectl -n kube-system get sa aws-load-balancer-controller \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+```
+
+### ✅ Phase 6 Checklist
+
+- [ ] `aws-load-balancer-controller` deployment is `Available`
+- [ ] IRSA ServiceAccount annotation points to the correct IAM role
+- [ ] No errors in controller logs
+
+---
+
+## Phase 7: Funnel TES Deployment
+
+### Goal
+
+Create the Funnel IAM role (for S3 access via IRSA), provision the TES S3 bucket, and deploy all Funnel Kubernetes resources. After this phase the TES API is reachable via an ALB endpoint.
+
+### What Happens
+
+1. Resolves OIDC provider ID from the EKS cluster (`cut -d'/' -f5` of the OIDC issuer URL)
+2. Creates IAM role `${CLUSTER_NAME}-iam-role` with an OIDC-scoped trust policy — allows the `funnel` ServiceAccount in `${TES_NAMESPACE}` to assume it
+3. Builds and attaches an inline S3 policy: full access to `${TES_S3_BUCKET}`, read-only to `${READ_BUCKETS}`, read-write to `${WRITE_BUCKETS}`
+4. Creates S3 bucket `${TES_S3_BUCKET}` with all public access blocked
+5. Renders and applies all Funnel YAML templates: `funnel-namespace`, `funnel-serviceaccount`, `funnel-rbac`, `funnel-crds`, `funnel-deployment`, `funnel-tes-service`, `tes-ingress-alb`, `funnel-configmap`, `ecr-auth-refresh`
+6. Waits for all Funnel pods to be Ready (10 min timeout)
+7. If `EXTERNAL_IP` is set, calls `setup_external_access.sh` to restrict the ALB security group to that IP
+
+### What Gets Created
+
+- IAM role `${CLUSTER_NAME}-iam-role` with OIDC trust policy
+- Inline S3 policy `${CLUSTER_NAME}-tes-policy` on the role
+- S3 bucket `${TES_S3_BUCKET}` (private, public access blocked)
+- Kubernetes resources in namespace `${TES_NAMESPACE}`:
+  - `ServiceAccount funnel` annotated with the IAM role ARN (IRSA)
+  - `ClusterRole` + `ClusterRoleBinding` for pod management
+  - Funnel CRDs
+  - `Deployment funnel` (Funnel server, pinned to bootstrap node)
+  - `Service tes-service` (ClusterIP, port `${FUNNEL_PORT}`)
+  - `Ingress tes-ingress` (ALB, port 80 → `${FUNNEL_PORT}`)
+  - `ConfigMap funnel-config` (nerdctl executor config, EFS mounts if enabled)
+  - `CronJob ecr-auth-refresh` (refreshes ECR credentials hourly)
+
+### Expected Output
+
+```
+============================================
+ Phase 7: TES / Funnel deployment
+============================================
+
+OIDC provider ID: ABCD1234567890EFGH
+✅ IAM role created: TES-iam-role
+✅ S3 permissions attached
+✅ S3 bucket created: tes-tasks-123456789012-eu-north-1
+Applying funnel-namespace...
+Applying funnel-serviceaccount...
+Applying funnel-rbac...
+Applying funnel-crds...
+Applying funnel-deployment...
+Applying funnel-tes-service...
+Applying tes-ingress-alb...
+Applying funnel-configmap...
+Applying ecr-auth-refresh...
+Waiting for Funnel pods to be Ready (10 min)...
+✅ Funnel deployment complete
+✅ Installation complete!
+
+Next steps:
+  1. Retrieve the TES endpoint:
+     kubectl -n funnel get ingress tes-ingress
+  2. Configure Cromwell tes.conf to point at the TES endpoint
+  3. Submit a test task: funnel task run hello.json
+```
+
+### Common Issues
+
+- Funnel pod `Pending` — Karpenter has not provisioned a worker node yet; wait 30–60 s then check `kubectl get nodeclaims`
+- `ImagePullBackOff` — ECR image not found in `${ECR_IMAGE_REGION}`; verify `FUNNEL_IMAGE` in `env.variables`
+- ALB not created — LB controller not running (Phase 6 incomplete); check ingress events: `kubectl describe ingress tes-ingress -n ${TES_NAMESPACE}`
+- IRSA not working (tasks can't write to S3) — OIDC fingerprint mismatch; run `aws iam list-open-id-connect-providers` and verify the OIDC provider ARN exists
+- `ConfigMap funnel-config` renders with blank EFS mounts — `USE_EFS=true` but Phase 5 was skipped; re-run Phase 5 first
+
+### Manual Verification
+
+```bash
+# Check Funnel pod is Running (on bootstrap node)
+kubectl get pods -n "${TES_NAMESPACE}"
+# NAME                      READY   STATUS    RESTARTS   AGE
+# funnel-xxxxxxxxxx-yyyy    1/1     Running   0          3m
+
+# Get the TES endpoint
+kubectl get ingress tes-ingress -n "${TES_NAMESPACE}"
+# NAME          CLASS   HOSTS   ADDRESS                                       PORTS   AGE
+# tes-ingress   alb     *       k8s-funnel-xxx.eu-north-1.elb.amazonaws.com  80      5m
+
+# Test TES API (replace with actual ALB DNS)
+curl http://k8s-funnel-xxx.eu-north-1.elb.amazonaws.com/v1/service-info
+# {"id":"funnel","name":"Funnel","type":{"artifact":"tes","type":"tes","version":"1.0.0"},...}
+
+# Check IRSA annotation on Funnel ServiceAccount
+kubectl get sa funnel -n "${TES_NAMESPACE}" \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+# arn:aws:iam::123456789012:role/TES-iam-role
+
+# Verify S3 bucket
+aws s3 ls "s3://${TES_S3_BUCKET}"
+# (empty — no output means accessible and empty)
+```
+
+### ✅ Phase 7 Checklist
+
+- [ ] Funnel pod is `Running` in namespace `${TES_NAMESPACE}`
+- [ ] `Ingress tes-ingress` has an ALB address
+- [ ] `curl http://<ALB_DNS>/v1/service-info` returns Funnel service info JSON
+- [ ] `funnel` ServiceAccount has IRSA annotation pointing to `${CLUSTER_NAME}-iam-role`
+- [ ] S3 bucket `${TES_S3_BUCKET}` exists and is accessible
+
+---
+
+## 💰 Cost Estimation
+
+### Monthly Costs (Example)
+
+| Component | Cost | Notes |
+|-----------|------|-------|
+| **EKS Cluster** | ~$72 | Fixed per cluster |
+| **System Node (t4g.medium, on-demand)** | ~$29 | Always-on ARM64 |
+| **Worker Nodes (Karpenter, Spot)** | ~$100–800 | Highly variable — scales to zero when idle |
+| **EFS Storage** | ~$0.30/GB-month | Scales with usage; 0 cost when empty |
+| **EBS Volumes** | ~$50–200 | Per-task gp3 volumes; auto-deleted |
+| **S3 Storage & Transfer** | ~$50–300 | Depends on workflow data volume |
+| **ALB** | ~$20 | Fixed per load balancer |
+| **NAT Gateway** | ~$35 | Fixed per AZ for private subnet egress |
+| **Total** | **~$360–1500/month** | Idle cluster (no tasks): ~$170/month |
+
+**Cost optimisation tips:**
+- Workers scale to zero between workflow runs — the dominant cost is proportional to active compute time
+- Use `WORKER_MIN_GENERATION=5` or higher to target newer-generation instances with better price/performance
+- Set `WORKER_MAX_VCPU` to avoid accidental selection of very large (expensive) instance types
+- Pre-fill `SPOT_QUOTA` below your actual quota to leave headroom for other workloads
+
+---
+
+## Troubleshooting
+
+### EKS Cluster Creation Fails
+
+```bash
+# Check eksctl CloudFormation stack events
+aws cloudformation describe-stack-events \
+  --stack-name "eksctl-${CLUSTER_NAME}-cluster" \
+  --region "${AWS_DEFAULT_REGION}" --output table | head -60
+
+# Check Karpenter prerequisites stack
+aws cloudformation describe-stacks \
+  --stack-name "EKS-${CLUSTER_NAME}" \
+  --query "Stacks[0].StackStatus" --output text
+```
+
+**Common causes:** insufficient IAM permissions on deploying identity; VPC quota exhausted; `CAPABILITY_NAMED_IAM` not passed.
+
+### Karpenter Not Provisioning Nodes
+
+```bash
+# Check NodePool and NodeClaims
+kubectl get nodepool workload -o yaml
+kubectl get nodeclaims
+
+# Check Karpenter logs for provisioning decisions
+kubectl -n kube-system logs -l app.kubernetes.io/name=karpenter --since=5m | grep -E "launched|failed|error"
+```
+
+**Common causes:** Spot quota exhausted; `NodePool limits.cpu` already reached; no eligible instance types after filtering; subnet tags missing.
+
+### Funnel Task Fails
+
+```bash
+# Check task pod logs
+kubectl get pods -n "${TES_NAMESPACE}" --sort-by=.metadata.creationTimestamp
+kubectl logs -n "${TES_NAMESPACE}" <task-pod-name>
+
+# Check worker node has EFS mounted (if USE_EFS=true)
+kubectl exec -n "${TES_NAMESPACE}" <task-pod-name> -- ls /mnt/efs
+```
+
+**Common causes:** EFS not mounted; S3 IRSA not working (check ServiceAccount annotation); container image not found in ECR.
+
+---
+
+## 📚 Related Documentation
+
+- **[AWS CLI Guide](/aws/cli-guide/)** — All CLI commands used by the installer with exact syntax and expected output
+- **[AWS Cost & Capacity](/aws/cost-and-capacity/)** — Quota planning and cost breakdown
+- **[AWS Troubleshooting](/aws/troubleshooting/)** — Detailed issue resolution
+- **[Cromwell Documentation](https://cromwell.readthedocs.io/)** — Workflow orchestration
+- **[Funnel Documentation](https://ohsu-comp-bio.github.io/funnel/)** — Task Execution Service
+
+---
+
+**Last Updated**: March 29, 2026
+**Status**: Draft — pending production validation on eu-north-1
 
 ```bash
 cd ./AWS_installer/installer
