@@ -18,9 +18,9 @@ permalink: /aws/installation-guide/
 ```
 AWS (eu-north-1 / Stockholm, 3 AZ)
 ┌────────────────────────────────────────────────────┐
-│ VPC (10.0.0.0/16)                                    │
-│ ├─ Public subnets (ALB, NAT Gateway)                 │
-│ └─ Private subnets (EKS nodes, EFS mount targets)      │
+│ VPC (10.0.0.0/16)                                  │
+│ ├─ Public subnets (ALB, NAT Gateway)               │
+│ └─ Private subnets (EKS nodes, EFS mount targets)  │
 └────────────────────────────────────────────────────┘
          │
          ├─ EKS Cluster (Kubernetes 1.34)
@@ -53,6 +53,8 @@ AWS (eu-north-1 / Stockholm, 3 AZ)
 | **EBS** | Task local storage | gp3 volumes, auto-provisioned |
 | **S3** | Object storage | Workflow I/O, cold archive |
 | **ECR** | Container registry | Private registry for task images |
+| **Funnel** | TES orchestrator | Kubernetes-native TES API server |
+| **Cromwell** | Workflow manager | WDL submission, runs on system node |
 
 ---
 
@@ -131,13 +133,8 @@ eksctl version
 # 0.224.0
 ```
 
-> **Minimum version: 0.224.0** — the Karpenter subnet and security-group discovery tags (`karpenter.sh/discovery`) were auto-applied but silently broken in earlier releases; the fix shipped in v0.224.0 ([#8684](https://github.com/eksctl-io/eksctl/pull/8684)). Older versions will cause Karpenter to fail to provision nodes.
->
-> Other notable changes in this range (0.207 → 0.224) with no action required:
-> - **v0.215.0**: eksctl now auto-tags the cluster security group with `karpenter.sh/discovery` (previously required manual tagging; still needed the v0.224 fix to work correctly).
-> - **v0.218.0**: eksctl-managed CloudFormation stacks have termination protection enabled by default. `eksctl delete cluster` handles this transparently; avoid deleting the stack manually via the AWS console or CLI.
-> - **v0.219.0 💥**: AL2023 is now the default AMI for all K8s versions (AL2 deprecated). Our cluster template already pins `amiFamily: AmazonLinux2023` explicitly, so behaviour is unchanged.
-> - **v0.222.0**: Default K8s version bumped to 1.34. `env.variables` pins `K8S_VERSION` explicitly, so no impact.
+> **Minimum version: 0.224.0** — the Karpenter subnet and security-group discovery tags (`karpenter.sh/discovery`) were auto-applied but silently broken in earlier releases; the fix shipped in v0.224.0 ([#8684](https://github.com/eksctl-io/eksctl/pull/8684)). Older versions can cause Karpenter to fail to provision nodes.
+
 
 ### P.4 kubectl
 
@@ -298,130 +295,112 @@ aws service-quotas list-service-quotas \
 
 Request increases via **AWS Console → Service Quotas → Request increase**. Spot vCPU quota increases are typically approved within minutes; EBS and EIP increases within 1–2 hours.
 
+---
+
+## (E)nvironment Setup
+
+### E.1: Download Installer
+
+```bash
+mkdir -p aws_installer
+cd aws_installer
+wget https://geertvandeweyer.github.io/aws/files/aws_installer.tar.gz
+tar -xzf aws_installer.tar.gz
+cd installer
+```
+
+### E.2: Configure Environment Variables
+
+Edit `env.variables`. Review and complete all settings — no shell logic belongs here, just plain values. Some variables requiring attention are highlighted below:
+
+| Variable Name | Notes |
+|---------------|-------|
+| `CLUSTER_NAME` | Name for the EKS cluster (used as prefix for all created resources) |
+| `AWS_DEFAULT_REGION` | Target AWS region (e.g. `eu-north-1`) |
+| `K8S_VERSION` | Tested with 1.31 and 1.34 |
+| `SYSTEM_NODE_TYPE` | Always-on bootstrap node; `t4g.medium` (ARM64) keeps the permanent cost minimal |
+| `WORKER_INSTANCE_FAMILIES` | Comma-separated EC2 category letters: `c`=compute, `m`=general, `r`=memory, `i`=storage |
+| `WORKER_MIN_GENERATION` | Minimum instance generation (e.g. `3` → c3+, m3+, r3+) |
+| `WORKER_EXCLUDE_TYPES` | Comma-separated substrings to disqualify types (e.g. `metal,nano,micro,small,flex`) |
+| `WORKER_MAX_VCPU` | Per-instance vCPU cap (0 = no cap) |
+| `WORKER_MAX_RAM_GIB` | Per-instance RAM cap in GiB (0 = no cap) |
+| `WORKER_ARCH` | `amd64` / `arm64` / `graviton` / `both` |
+| `WORKER_CPU_VENDOR` | `intel` / `amd` / `both` (only relevant when `WORKER_ARCH=amd64`) |
+| `SPOT_QUOTA` | Spot vCPU limit; auto-detected from Service Quotas if blank; pre-fill to cap below your raw quota |
+| `ALIAS_VERSION` | AL2023 AMI alias version tag (e.g. `v20260223`); auto-detected from SSM if blank; pre-fill to pin |
+| `USE_EFS` | `true` to provision and mount EFS shared storage on all worker nodes |
+| `EFS_ID` | Leave blank on first run; the installer creates the filesystem and writes back the ID |
+| `ECR_IMAGE_REGION` | AWS region where the Funnel ECR image is stored (may differ from cluster region) |
+| `TES_VERSION` | Funnel image tag |
+| `EXTERNAL_IP` | IP of the on-prem Cromwell server; only this IP gets inbound access to the TES endpoint |
+| `READ_BUCKETS` | Additional S3 buckets worker tasks may read from (wildcards `*` allowed) |
+| `WRITE_BUCKETS` | Additional S3 buckets worker tasks may write to |
+| `EBS_IOPS` | gp3 IOPS for worker data disk (3,000–80,000; 3,000 = free baseline) |
+| `EBS_THROUGHPUT` | gp3 throughput in MB/s (125–1,000; 250 = above baseline, small extra cost) |
+
+> **Auto-derived values** — the following variables can be left blank and will be resolved by the installer at runtime. Pre-fill them to skip the live lookup or to override the derived value:
+>
+> | Variable | Resolved from |
+> |---|---|
+> | `AWS_ACCOUNT_ID` | `aws sts get-caller-identity` |
+> | `ALIAS_VERSION` | SSM `/aws/service/eks/optimized-ami/.../recommended/image_id` → EC2 image name |
+> | `SPOT_QUOTA` | `aws service-quotas` — Standard Spot vCPU quota in the target region |
+> | `FUNNEL_IMAGE` | `${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_IMAGE_REGION}.amazonaws.com/funnel:${TES_VERSION}` |
+> | `TES_S3_BUCKET` | `tes-tasks-${AWS_ACCOUNT_ID}-${AWS_DEFAULT_REGION}` |
+
+A fully-filled example is provided in `env.variables.filled` for reference.
+
+### E.3: Verify Prerequisites
+
+```bash
+# Check all tools are available
+which aws eksctl kubectl helm envsubst python3
+
+# Check AWS credentials
+aws sts get-caller-identity
+# { "Account": "123456789012", "UserId": "AIDA...", "Arn": "arn:aws:iam::..." }
+
+# Check target region is accessible
+aws ec2 describe-availability-zones --region "${AWS_DEFAULT_REGION}" \
+  --query 'AvailabilityZones[].ZoneName' --output text
+
+# Check Spot vCPU quota
+aws service-quotas list-service-quotas --service-code ec2 \
+  --query "Quotas[?QuotaName=='All Standard (A, C, D, H, I, M, R, T, Z) Spot Instance Requests'].Value" \
+  --output text
+```
 
 ---
 
-## Overview & Architecture
+## (D)eploy Cluster
 
-### Platform Components
+### What Happens
 
-| Component | Purpose | AWS Service |
-|-----------|---------|------------|
-| **Kubernetes Cluster** | Container orchestration | EKS (Elastic Kubernetes Service) |
-| **System Node** | Control plane + infrastructure (always-on) | EC2 t4g.medium |
-| **Worker Nodes** | Task execution (auto-scaled) | EC2 (Karpenter-managed) |
-| **Shared Storage** | Workflow data & reference files | EFS (Elastic File System) |
-| **Object Storage** | Task I/O, logs, artifacts | S3 (Simple Storage Service) |
-| **Orchestrator** | TES API for task execution | Funnel (container-native) |
-| **Workflow Manager** | WDL workflow submission | Cromwell (hosted locally) |
+The installer orchestrates all setup in ordered phases (0–7) to provision AWS infrastructure, deploy Karpenter, configure storage, and deploy Funnel TES.
 
-### Architecture Diagram
+1. **Phase 0**: Load `env.variables`, derive blank variables (`AWS_ACCOUNT_ID`, `ALIAS_VERSION`, `SPOT_QUOTA`), validate tools and credentials
+2. **Phase 1**: Deploy Karpenter prerequisite CloudFormation stack (IAM roles, SQS interruption queue)
+3. **Phase 2**: Create EKS cluster via `eksctl` from CloudFormation template, wait for `ACTIVE`, label bootstrap node
+4. **Phase 3**: Attach IAM policies to the Karpenter node role (EBS CSI + optional EFS CSI)
+5. **Phase 4**: Install Karpenter via Helm (OCI chart from public ECR), verify IRSA/Pod Identity
+6. **Phase 4.1**: Apply `EC2NodeClass` (rendered from template + injected userdata), then generate and apply `NodePool` via `update-nodepool-types.sh`
+7. **Phase 5**: Create EFS filesystem, deploy EFS CSI addon, configure security groups and mount targets; write back `EFS_ID` to `env.variables`
+8. **Phase 6**: Deploy AWS Load Balancer Controller via Helm
+9. **Phase 7**: Create Funnel IAM role (IRSA), create S3 task bucket, deploy all Funnel resources from YAML templates
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    AWS Account (us-east-1)                      │
-├─────────────────────────────────────────────────────────────────┤
-│                         VPC (10.0.0.0/16)                        │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │   EKS Cluster (Kubernetes 1.31+)                          │ │
-│  │  ┌──────────────────────────────────────────────────────┐ │ │
-│  │  │ System Node (t4g.medium, bootstrap)                 │ │ │
-│  │  │ ├─ Karpenter Controller (2 replicas, HA)            │ │ │
-│  │  │ ├─ Funnel Server (task queue)                       │ │ │
-│  │  │ └─ Cromwell Server (localhost:7900)                 │ │ │
-│  │  └──────────────────────────────────────────────────────┘ │ │
-│  │  ┌──────────────────────────────────────────────────────┐ │ │
-│  │  │ Worker Nodes (on-demand, Karpenter-managed)         │ │ │
-│  │  │ ├─ c6g.large (2 vCPU, 8 GB) — small tasks           │ │ │
-│  │  │ ├─ c6g.xlarge (4 vCPU, 16 GB) — medium tasks        │ │ │
-│  │  │ └─ m6g.2xlarge (8 vCPU, 32 GB) — large tasks        │ │ │
-│  │  └──────────────────────────────────────────────────────┘ │ │
-│  │  ┌──────────────────────────────────────────────────────┐ │ │
-│  │  │ Shared Services                                      │ │ │
-│  │  │ ├─ EFS CSI Driver (mounts EFS on all nodes)          │ │ │
-│  │  │ ├─ AWS Load Balancer Controller (ALB/NLB)           │ │ │
-│  │  │ └─ CoreDNS, kube-proxy                              │ │ │
-│  │  └──────────────────────────────────────────────────────┘ │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  ┌─────────────┬──────────────────────────┬──────────────────┐ │
-│  │   EFS       │      S3 Buckets          │   ECR Registry   │ │
-│  │ (150 GB,    │ (task I/O, logs,         │ (Funnel image)   │ │
-│  │  ReadWrite) │  artifacts)              │                  │ │
-│  └─────────────┴──────────────────────────┴──────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Key Differences from OVH
-
-| Aspect | AWS | OVH |
-|--------|-----|-----|
-| **Cluster Creation** | CloudFormation + eksctl | ovhcloud CLI |
-| **Shared Storage** | EFS (managed NFS) | Manila (managed NFS) |
-| **Object Storage** | S3 (AWS-native) | OVH S3-compatible API |
-| **VM Provisioning** | EC2 via AWS | OpenStack via OVH |
-| **Authentication** | IAM roles/policies | OVH API tokens |
-| **Cost Model** | Pay-per-hour on-demand | Fixed project quota + overage |
-| **Karpenter Limits** | Spot quota limits | vCPU/RAM quota limits |
-
----
-
-## Phase 0: Environment Setup
-
-### Step 1: Clone Installer
+### Execution
 
 ```bash
-cd /path/to/workspace
-git clone https://github.com/your-org/k8s.git
-cd k8s/AWS_installer/installer
+cd installer/
+./install-eks-karpenter.sh
 ```
 
-### Step 2: Configure env.variables
+The script prints coloured status lines (`✅` / `⚠` / `💥`) for each phase step and stops on the first unrecoverable error. All behaviour is driven by `env.variables` — re-runs are safe and idempotent.
 
-Edit `./env.variables` with your AWS settings:
-
-```bash
-# Required: AWS account & region
-export CLUSTER_NAME="TES"
-export AWS_DEFAULT_REGION="us-east-1"
-export AWS_ACCOUNT_ID="123456789012"  # Get from `aws sts get-caller-identity`
-
-# Kubernetes version
-export K8S_VERSION="1.34"  # Check latest EKS support
-
-# Karpenter
-export KARPENTER_VERSION="1.9.0"
-export KARPENTER_REPLICAS=2  # HA for production
-
-# Storage
-export USE_EFS="true"
-export EFS_ID=""  # Will be created by installer
-export TES_S3_BUCKET="tes-tasks-${AWS_ACCOUNT_ID}-${AWS_DEFAULT_REGION}"
-
-# Funnel TES
-export TES_NAMESPACE="funnel"
-export ECR_IMAGE_REGION="us-east-1"  # Where Funnel image is stored
-export FUNNEL_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_IMAGE_REGION}.amazonaws.com/funnel:multiarch-revc590523e-develop"
-
-# Performance
-export EBS_IOPS=3000        # EBS baseline IOPS
-export EBS_THROUGHPUT=250   # EBS baseline throughput (MB/s)
-
-# Optional: External access IP (for firewall rules)
-export EXTERNAL_IP="203.0.113.42"  # Your IP (or leave empty)
-```
-
-### Step 3: Verify Prerequisites
-
-```bash
-bash -c '
-  echo "=== AWS CLI ===" && aws --version
-  echo "=== eksctl ===" && eksctl version
-  echo "=== kubectl ===" && kubectl version --client
-  echo "=== Helm ===" && helm version
-  echo "=== AWS Credentials ===" && aws sts get-caller-identity
-'
-```
+> **NodePool only** — to regenerate the Karpenter `NodePool` after changing instance family or quota settings without re-running the full installer:
+> ```bash
+> ./update-nodepool-types.sh
+> ```
 
 ---
 
