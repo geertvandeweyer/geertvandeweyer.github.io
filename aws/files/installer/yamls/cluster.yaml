@@ -1,0 +1,64 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: TES
+  region: eu-west-2
+  version: "1.34"
+  tags:
+    karpenter.sh/discovery: TES
+
+iam:
+  withOIDC: true
+  podIdentityAssociations:
+    - namespace: "kube-system"
+      serviceAccountName: karpenter
+      roleName: TES-karpenter
+      permissionPolicyARNs:
+        - arn:aws:iam::391209680344:policy/KarpenterControllerNodeLifecyclePolicy-TES
+        - arn:aws:iam::391209680344:policy/KarpenterControllerIAMIntegrationPolicy-TES
+        - arn:aws:iam::391209680344:policy/KarpenterControllerEKSIntegrationPolicy-TES
+        - arn:aws:iam::391209680344:policy/KarpenterControllerInterruptionPolicy-TES
+        - arn:aws:iam::391209680344:policy/KarpenterControllerResourceDiscoveryPolicy-TES
+
+iamIdentityMappings:
+  - arn: "arn:aws:iam::391209680344:role/KarpenterNodeRole-TES"
+    username: system:node:{{EC2PrivateDNSName}}
+    groups:
+      - system:bootstrappers
+      - system:nodes
+
+managedNodeGroups:
+  # A managed nodegroup is created by eksctl.  We set desiredCapacity to 0
+  # by default because we want Karpenter to supply the single ARM baseline
+  # node; the managed group remains available (with zero nodes) for any Intel
+  # workloads we might add later.  Change this value or remove the block if
+  # you really want eksctl to maintain active nodes.
+  - instanceType: t4g.medium
+    amiFamily: AmazonLinux2023
+    name: TES-baseline-arm
+    desiredCapacity: 1        # no baseline nodes from eksctl
+    minSize: 0
+    maxSize: 1
+    privateNetworking: false
+    labels:
+      # mark these nodes for bootstrap; the karpenter controller pod can
+      # select them using a nodeSelector, and they will appear in the
+      # installer labeling step too.
+      karpenter.io/bootstrap: "true"
+
+addons:
+  - name: eks-pod-identity-agent
+
+  # We declare the IRSA association for the VPC CNI explicitly instead of
+  # letting eksctl auto‑create a role.  This makes the IAM role and its
+  # permissions visible in our cluster config, satisfies locked‑down
+  # environments where automatic role creation may be prohibited, and lets us
+  # name or customise the role (`VpcCniRole`) ourselves.  The policy listed is
+  # the standard AmazonEKS_CNI_Policy required by aws-node pods to manage ENIs.
+  - name: vpc-cni
+    podIdentityAssociations:
+      - namespace: kube-system
+        serviceAccountName: aws-node
+        roleName: VpcCniRole
+        permissionPolicyARNs:
+          - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy

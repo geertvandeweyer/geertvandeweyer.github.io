@@ -1,7 +1,15 @@
 ---
 layout: default
-title: "Funnel TES"
-description: "Task Execution Service - Platform-agnostic implementation guide"
+title: "Funnel TES — GA4GH Task Execution Service on Kubernetes"
+description: "Platform-agnostic guide to deploying Funnel TES (Task Execution Service) on Kubernetes with nerdctl container executor, S3 and EFS storage backends."
+keywords:
+  - Funnel TES
+  - Task Execution Service
+  - GA4GH TES
+  - Kubernetes
+  - nerdctl
+  - genomics
+  - bioinformatics
 permalink: /tes/
 ---
 

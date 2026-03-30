@@ -1,0 +1,106 @@
+# ============================================================
+# DEPRECATED — this file is no longer used by install-eks-karpenter.sh.
+#
+# It has been split into two separate concerns:
+#
+#   yamls/karpenter-nodeclass.template.yaml
+#       EC2NodeClass — AWS-specific node configuration (AMI, EBS disks,
+#       subnet/SG selectors, userdata).  Rendered by the installer.
+#
+#   update-nodepool-types.sh
+#       Queries EC2 for available Spot instance types, applies the
+#       WORKER_INSTANCE_FAMILIES / WORKER_EXCLUDE_TYPES / quota filters
+#       from env.variables, and generates + applies the NodePool YAML
+#       dynamically (mirrors OVH's update-nodepool-flavors.sh pattern).
+#
+# This file is kept for reference only.  DO NOT apply it directly.
+# ============================================================
+
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: workload
+spec:
+  weight: 50
+  template:
+    metadata:
+      labels:
+        workload-type: jobs
+        role: workflow
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.k8s.aws/instance-cpu-manufacturer
+          operator: In
+          values: ["intel"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c","m","r","t"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+        - key: karpenter.k8s.aws/instance-memory
+          operator: Gt
+          values: ["2047"]
+      nodeClassRef:
+        name: workload
+        kind: EC2NodeClass
+        group: karpenter.k8s.aws
+      expireAfter: 24h
+  limits:
+    cpu: ${SPOT_QUOTA}
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 10m
+
+# ── EC2NodeClasses ─────────────────────────────────────
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: workload
+spec:
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"
+  amiSelectorTerms:
+    - alias: "al2023@${ALIAS_VERSION}"
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  blockDeviceMappings:
+    # root disk
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        deleteOnTermination: true
+        encrypted: true
+    # autoscaled disk, see userdata
+    #   - holds scratch
+    #   - holds docker images and containerd data (e.g. for caching)
+    #   - set throughput here if insufficient. 
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 250
+        deleteOnTermination: true
+        encrypted: true
+  userData: |
+    $(< userdata/workload-node.sh)
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"

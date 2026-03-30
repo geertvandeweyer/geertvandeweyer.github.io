@@ -1,7 +1,17 @@
 ---
 layout: default
-title: "OVHcloud Deployment"
-description: "Complete guide to deploying Cromwell + TES on OVHcloud MKS"
+title: "OVHcloud MKS Deployment — Cromwell + Funnel TES"
+description: "Production-tested guide to deploying Cromwell and Funnel TES on OVHcloud MKS. Covers Karpenter autoscaling, Manila NFS, S3 object storage, and private container registry."
+keywords:
+  - OVHcloud
+  - MKS
+  - Cromwell
+  - Funnel TES
+  - Karpenter
+  - Manila NFS
+  - genomics
+  - bioinformatics
+  - OVHcloud Kubernetes
 permalink: /ovh/
 ---
 

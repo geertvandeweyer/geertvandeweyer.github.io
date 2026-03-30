@@ -1,7 +1,23 @@
 ---
 layout: default
-title: "Cromwell + TES on Kubernetes"
-description: "Platform-agnostic guide to deploying Cromwell and Task Execution Service on any cloud Kubernetes cluster"
+title: "Cromwell + TES on Kubernetes — AWS EKS & OVHcloud MKS Deployment Guides"
+description: "Deploy Cromwell and Funnel TES on managed Kubernetes. Full guides for AWS EKS and OVHcloud MKS with Karpenter autoscaling, EFS/NFS shared storage, S3, and WDL genomics workflows."
+keywords:
+  - Cromwell
+  - Funnel TES
+  - Kubernetes
+  - AWS EKS
+  - OVHcloud MKS
+  - Karpenter
+  - genomics workflows
+  - WDL
+  - CWL
+  - bioinformatics
+  - Task Execution Service
+  - GA4GH TES
+  - nerdctl
+  - EFS
+  - S3
 permalink: /
 extra_css:
   - /assets/css/custom.css
@@ -14,7 +30,8 @@ extra_css:
 This page describes steps taken to deploy Cromwell (workflow engine) + Funnel TES (task execution) on OVH, AWS, or other managed Kubernetes service.  We discuss setup, configuration to give special attention, and try to make cost estimates for running genomics analysis on this platform. 
 
 
->* This might be a bit optimistic. Thi page focuses on AWS EKS and OVHcloud MKS.
+> Might be a bit optimistic. This page focuses on AWS EKS and OVHcloud MKS.
+
 ---
 
 ## 🎯 Project Goal

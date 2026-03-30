@@ -1,7 +1,16 @@
 ---
 layout: default
-title: "AWS Deployment"
-description: "Guide to deploying Cromwell + TES on AWS EKS (eu-north-1)"
+title: "AWS EKS Deployment — Cromwell + Funnel TES"
+description: "Guide to deploying Cromwell and Funnel TES on AWS EKS with Karpenter Spot autoscaling, EFS shared storage, ALB ingress, and S3 task storage for genomics workflows."
+keywords:
+  - AWS EKS
+  - Cromwell
+  - Funnel TES
+  - Karpenter Spot
+  - EFS
+  - genomics
+  - bioinformatics
+  - EKS autoscaling
 permalink: /aws/
 ---
 

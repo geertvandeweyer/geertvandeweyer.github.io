@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: funnel
+  namespace: funnel
+  labels:
+    app: funnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: funnel
+  template:
+    metadata:
+      labels:
+        app: funnel
+    spec:
+      nodeSelector:
+        workload-type: system
+        kubernetes.io/arch: arm64
+      # service account name must match the Kubernetes ServiceAccount resource
+      # we create earlier; the IAM role is attached via annotation, not here
+      serviceAccountName: funnel
+      containers:
+        - name: funnel
+          image: 391209680344.dkr.ecr.eu-west-1.amazonaws.com/funnel:multiarch-revc590523e-develop
+          args: 
+            - server
+            - run
+            - --config=/etc/funnel/funnel.yaml
+          env:
+            - name: AWS_REGION
+              value: "eu-west-2"
+            - name: S3_BUCKET
+              value: "tes-tasks-391209680344-eu-west-2"
+            - name: AWS_DEFAULT_REGION
+              value: "eu-west-2"
+            - name: FUNNEL_S3_BUCKET
+              value: "tes-tasks-391209680344-eu-west-2"
+          ports:
+            - containerPort: 8000
+              name: http
+            - containerPort: 9090
+              name: rpc
+          volumeMounts:
+            - name: config
+              mountPath: /etc/funnel
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "0"
+              memory: "0"
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /service-info
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /service-info
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: funnel-config
+      - name: tmp
+        emptyDir: {}

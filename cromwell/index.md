@@ -1,7 +1,16 @@
 ---
 layout: default
-title: "Cromwell"
-description: "Workflow Orchestration Engine - Platform-agnostic setup"
+title: "Cromwell Workflow Engine — WDL on Kubernetes TES"
+description: "Platform-agnostic guide to configuring Cromwell for WDL workflow execution via Funnel TES on Kubernetes. Covers cromwell.conf, TES backend, S3/NFS storage, and call-caching."
+keywords:
+  - Cromwell
+  - WDL
+  - workflow engine
+  - TES backend
+  - Funnel
+  - genomics
+  - bioinformatics
+  - call-caching
 permalink: /cromwell/
 ---
 

@@ -1,10 +1,20 @@
 # GitHub Pages Jekyll Configuration
 
 title: "Cromwell + TES on Kubernetes"
-description: "Guides to run Cromwell, TES (Funnel), and Karpenter across cloud platforms"
-author: "Geert Vandeweyer"
+description: "Step-by-step guides to deploy Cromwell and Funnel TES on managed Kubernetes — AWS EKS and OVHcloud MKS — with Karpenter autoscaling, EFS/NFS shared storage, and S3 object storage."
+author:
+  name: "Geert Vandeweyer"
+  url: "https://github.com/geertvandeweyer"
+
+keywords: "Cromwell, Funnel TES, Kubernetes, AWS EKS, OVHcloud MKS, Karpenter, genomics workflows, WDL, bioinformatics, Task Execution Service, GA4GH TES, nerdctl, EFS, S3"
+
+lang: "en"
 baseurl: ""  # User site (geertvandeweyer.github.io), no baseurl needed
 url: "https://geertvandeweyer.github.io"
+
+twitter:
+  username: geertvandeweyer
+  card: summary
 
 # Jekyll theme (minimal, with custom override)
 # theme: jekyll-theme-architect
@@ -20,6 +30,7 @@ sass:
 plugins:
   - jekyll-seo-tag
   - jekyll-github-metadata
+  - jekyll-sitemap
 
 exclude:
   - ".git"

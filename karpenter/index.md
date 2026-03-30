@@ -1,7 +1,15 @@
 ---
 layout: default
-title: "Karpenter"
-description: "Kubernetes Auto-scaling - Platform-agnostic setup"
+title: "Karpenter Autoscaling — AWS EKS & OVHcloud MKS"
+description: "Platform-agnostic guide to Karpenter node autoscaling on AWS EKS and OVHcloud MKS. Covers NodePool configuration, Spot instances, instance-type filtering, and quota management."
+keywords:
+  - Karpenter
+  - Kubernetes autoscaling
+  - AWS EKS Karpenter
+  - OVHcloud Karpenter
+  - Spot instances
+  - NodePool
+  - EC2NodeClass
 permalink: /karpenter/
 ---
 

@@ -1,7 +1,20 @@
 ---
 layout: default
-title: "Installation Guide"
-description: "8-phase deployment guide for OVHcloud MKS + Funnel + Cromwell"
+title: "OVHcloud MKS Installation Guide — Cromwell + Funnel TES + Karpenter"
+description: "Step-by-step 8-phase guide to deploy Cromwell genomics workflows on OVHcloud MKS with Karpenter autoscaling, Manila NFS, OVH S3, and Funnel TES task execution."
+keywords:
+  - OVHcloud MKS
+  - Cromwell
+  - Funnel TES
+  - Karpenter
+  - genomics workflow
+  - WDL
+  - Kubernetes autoscaling
+  - Manila NFS
+  - OVHcloud Kubernetes
+  - Task Execution Service
+  - nerdctl
+  - GA4GH TES
 permalink: /ovh/installation-guide/
 ---
 

@@ -1,0 +1,44 @@
+# EFS support is optional; installation only applies this file when
+# env variable EFS_ID is set in env.variables.  The ConfigMap template uses
+# EFS_WORKER_MOUNT and EFS_WORKER_VOLUME, which are empty when EFS_ID is
+# unset, so the worker jobs won’t mount any EFS volume.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: efs-pv
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  # PV size is a placeholder for Kubernetes binding. EFS is elastic and
+  # the underlying filesystem is not limited by this value; pods can
+  # consume more space on the EFS mount than the value declared here.
+  capacity:
+    storage: 1Gi
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: ${EFS_ID}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: efs-pvc
+  namespace: ${TES_NAMESPACE}  # created in TES namespace
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  # PVC storage request is a placeholder. EFS itself is elastic and
+  # this request only satisfies Kubernetes' PV/PVC contract.
+  resources:
+    requests:
+      storage: 1Gi
+  

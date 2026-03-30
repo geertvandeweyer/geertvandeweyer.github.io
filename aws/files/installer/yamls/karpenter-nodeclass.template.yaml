@@ -1,0 +1,64 @@
+# EC2NodeClass — describes the AWS-specific configuration for Karpenter workload nodes.
+#
+# Variables substituted by the installer (envsubst pass + userdata injection):
+#   ${CLUSTER_NAME}    — EKS cluster name (used for role + subnet/SG discovery tags)
+#   ${ALIAS_VERSION}   — AL2023 AMI alias version string (e.g. v20260223)
+#   ${EBS_IOPS}        — IOPS for the 100 GiB data disk
+#   ${EBS_THROUGHPUT}  — Throughput (MB/s) for the data disk
+#
+# The userData block is injected by the installer from
+#   userdata/workload-node.template.sh  (rendered separately, then embedded here).
+# The placeholder line "    __WORKLOAD_USERDATA__" is replaced by the installer
+# with the rendered, indented userdata script before applying.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: workload
+spec:
+  # IAM role for Karpenter-provisioned worker nodes (created by CloudFormation stack).
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"
+
+  # AMI — always use the latest AL2023 for the pinned alias version.
+  # Alias format: al2023@<version>  (e.g. al2023@v20260223)
+  amiSelectorTerms:
+    - alias: "al2023@${ALIAS_VERSION}"
+
+  # IMDSv2 required; hop-limit 2 allows pods to reach IMDS via the node's
+  # network namespace without granting access to nested containers.
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+
+  blockDeviceMappings:
+    # /dev/xvda — OS root disk (20 GiB, lean)
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        deleteOnTermination: true
+        encrypted: true
+    # /dev/xvdb — data disk for containerd images + Funnel work dir.
+    # Mounted and auto-expanded by amazon-ebs-autoscale in the userdata script.
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: ${EBS_IOPS}
+        throughput: ${EBS_THROUGHPUT}
+        deleteOnTermination: true
+        encrypted: true
+
+  # Userdata injected by installer from userdata/workload-node.template.sh.
+  # DO NOT edit below this line manually — regenerate via install-eks-karpenter.sh.
+  userData: |
+    __WORKLOAD_USERDATA__
+
+  # Subnet and security-group discovery via Karpenter tags set at cluster creation.
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"

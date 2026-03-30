@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::391209680344:oidc-provider/oidc.eks.eu-west-2.amazonaws.com/id/322950D81202CC3BCCB50B31DBB597C9"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.eu-west-2.amazonaws.com/id/322950D81202CC3BCCB50B31DBB597C9:sub": "system:serviceaccount:funnel:funnel"
+        }
+      }
+    }
+  ]
+}

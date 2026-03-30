@@ -1,0 +1,167 @@
+# ─────────────────────────────────────────────────────────────
+# EFS SSH-mount pod
+#
+# Deploys a persistent SSH+NFS pod on the arm64 system node so
+# the EFS share can be mounted continuously via sshfs from any
+# login/bastion host.
+#
+# Usage after deployment:
+#   # 1. Inject your public key once:
+#   kubectl create secret generic efs-ssh-keys -n funnel \
+#     --from-literal=authorized_keys="$(cat ~/.ssh/id_rsa.pub)"
+#
+#   # 2. Restart the pod to pick up the key:
+#   kubectl rollout restart deployment/efs-ssh-mount -n funnel
+#
+#   # 3a. sshfs via NodePort (any node IP works, traffic is routed):
+#   NODE_IP=$(kubectl get nodes -l workload-type=system -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+#   sshfs root@${NODE_IP}:/mnt/efs /local/efs-remote -p 30022 \
+#         -o IdentityFile=~/.ssh/id_rsa,StrictHostKeyChecking=no
+#
+#   # 3b. sshfs via kubectl port-forward (no node IP needed):
+#   kubectl port-forward svc/efs-ssh-mount -n funnel 2222:22 &
+#   sshfs root@localhost:/mnt/efs /local/efs-remote -p 2222 \
+#         -o IdentityFile=~/.ssh/id_rsa,StrictHostKeyChecking=no
+# ─────────────────────────────────────────────────────────────
+
+# ── 1. Entrypoint ConfigMap ──────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: efs-ssh-entrypoint
+  namespace: funnel
+data:
+  entrypoint.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "[efs-ssh] Installing openssh..."
+    apk add --no-cache openssh
+
+    # Generate host keys (idempotent)
+    ssh-keygen -A
+
+    # Minimal sshd config (key-only, no password)
+    cat > /etc/ssh/sshd_config <<'SSHD_EOF'
+    Port 22
+    PermitRootLogin prohibit-password
+    PubkeyAuthentication yes
+    AuthorizedKeysFile /root/.ssh/authorized_keys
+    PasswordAuthentication no
+    ChallengeResponseAuthentication no
+    UsePAM no
+    PrintMotd no
+    Subsystem sftp /usr/lib/ssh/sftp-server
+    SSHD_EOF
+
+    mkdir -p /run/sshd /root/.ssh
+    chmod 700 /root/.ssh
+
+    # Copy authorized_keys from the Secret volume into /root/.ssh.
+    # sshd refuses AuthorizedKeysFile paths inside secret-volume dirs
+    # (tmpfs with sticky bit) due to ownership/mode checks.
+    if [ -s /etc/ssh-keys/authorized_keys ]; then
+      cp /etc/ssh-keys/authorized_keys /root/.ssh/authorized_keys
+      chmod 600 /root/.ssh/authorized_keys
+      echo "[efs-ssh] Loaded $(wc -l < /root/.ssh/authorized_keys) authorized key(s)"
+    else
+      echo "[efs-ssh] WARNING: authorized_keys secret is empty — SSH will not work."
+      echo "[efs-ssh] Run: kubectl create secret generic efs-ssh-keys -n funnel --from-literal=authorized_keys=\"\$(cat ~/.ssh/id_rsa.pub)\" --dry-run=client -o yaml | kubectl apply -f -"
+    fi
+
+    echo "[efs-ssh] EFS share:"
+    df -h /mnt/efs || echo "  (EFS not yet visible)"
+
+    echo "[efs-ssh] Starting sshd on port 22..."
+    exec /usr/sbin/sshd -D -e
+
+---
+# ── 2. SSH authorized_keys Secret (populate before first use) ─
+# Create/update with:
+#   kubectl create secret generic efs-ssh-keys -n funnel \
+#     --from-literal=authorized_keys="$(cat ~/.ssh/id_rsa.pub)" \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# NOTE: this block intentionally omitted from the yaml so that
+# kubectl apply never overwrites a populated secret.
+
+---
+# ── 3. Deployment ─────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: efs-ssh-mount
+  namespace: funnel
+  labels:
+    app: efs-ssh-mount
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: efs-ssh-mount
+  template:
+    metadata:
+      labels:
+        app: efs-ssh-mount
+    spec:
+      # Pin to the on-demand arm64 system node (never evicted)
+      nodeSelector:
+        workload-type: system
+        kubernetes.io/arch: arm64
+
+      volumes:
+        # EFS mounted directly via NFS (no CSI driver needed)
+        - name: efs
+          nfs:
+            server: fs-0bd10f52a04211916.efs.eu-west-2.amazonaws.com
+            path: /
+        # Entrypoint script
+        - name: entrypoint
+          configMap:
+            name: efs-ssh-entrypoint
+            defaultMode: 0755
+        # SSH authorized_keys from Secret
+        - name: ssh-keys
+          secret:
+            secretName: efs-ssh-keys
+            defaultMode: 0600
+
+      containers:
+        - name: efs-ssh
+          image: alpine:3          # arm64 native, tiny ~7 MB
+          command: ["/entrypoint/entrypoint.sh"]
+          ports:
+            - name: ssh
+              containerPort: 22
+              hostPort: 30022      # also bind directly on the node IP
+          volumeMounts:
+            - name: efs
+              mountPath: /mnt/efs
+            - name: entrypoint
+              mountPath: /entrypoint
+            - name: ssh-keys
+              mountPath: /etc/ssh-keys
+          resources:
+            requests:
+              cpu: "0"
+              memory: "0"
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+---
+# ── 4. NodePort Service ────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: efs-ssh-mount
+  namespace: funnel
+spec:
+  type: NodePort
+  selector:
+    app: efs-ssh-mount
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      nodePort: 30022

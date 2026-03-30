@@ -1,0 +1,67 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_DEFAULT_REGION}
+  version: "${K8S_VERSION}"
+  tags:
+    karpenter.sh/discovery: ${CLUSTER_NAME}
+
+iam:
+  withOIDC: true
+  podIdentityAssociations:
+    - namespace: "${KARPENTER_NAMESPACE}"
+      serviceAccountName: karpenter
+      roleName: ${CLUSTER_NAME}-karpenter
+      permissionPolicyARNs:
+        - arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerNodeLifecyclePolicy-${CLUSTER_NAME}
+        - arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerIAMIntegrationPolicy-${CLUSTER_NAME}
+        - arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerEKSIntegrationPolicy-${CLUSTER_NAME}
+        - arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerInterruptionPolicy-${CLUSTER_NAME}
+        - arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerResourceDiscoveryPolicy-${CLUSTER_NAME}
+
+iamIdentityMappings:
+  - arn: "arn:${AWS_PARTITION}:iam::${AWS_ACCOUNT_ID}:role/KarpenterNodeRole-${CLUSTER_NAME}"
+    username: system:node:{{EC2PrivateDNSName}}
+    groups:
+      - system:bootstrappers
+      - system:nodes
+
+managedNodeGroups:
+  # A managed nodegroup is created by eksctl.  We set desiredCapacity to 0
+  # by default because we want Karpenter to supply the single ARM baseline
+  # node; the managed group remains available (with zero nodes) for any Intel
+  # workloads we might add later.  Change this value or remove the block if
+  # you really want eksctl to maintain active nodes.
+  - instanceType: ${SYSTEM_NODE_TYPE}
+    amiFamily: AmazonLinux2023
+    name: ${CLUSTER_NAME}-baseline-arm
+    desiredCapacity: 1        # no baseline nodes from eksctl
+    minSize: 0
+    maxSize: 1
+    privateNetworking: false
+    labels:
+      # mark these nodes for bootstrap; the karpenter controller pod can
+      # select them using a nodeSelector, and they will appear in the
+      # installer labeling step too.
+      ${BOOTSTRAP_LABEL_KEY}: "${BOOTSTRAP_LABEL_VALUE}"
+      # Pin system pods (funnel, efs-ssh-mount, alb-controller, …) to this
+      # node from day-1 so Karpenter never needs to provision a second ARM node.
+      workload-type: system
+
+addons:
+  - name: eks-pod-identity-agent
+
+  # We declare the IRSA association for the VPC CNI explicitly instead of
+  # letting eksctl auto‑create a role.  This makes the IAM role and its
+  # permissions visible in our cluster config, satisfies locked‑down
+  # environments where automatic role creation may be prohibited, and lets us
+  # name or customise the role (`VpcCniRole`) ourselves.  The policy listed is
+  # the standard AmazonEKS_CNI_Policy required by aws-node pods to manage ENIs.
+  - name: vpc-cni
+    podIdentityAssociations:
+      - namespace: kube-system
+        serviceAccountName: aws-node
+        roleName: VpcCniRole
+        permissionPolicyARNs:
+          - arn:${AWS_PARTITION}:iam::aws:policy/AmazonEKS_CNI_Policy

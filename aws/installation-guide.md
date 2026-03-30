@@ -1,7 +1,21 @@
 ---
 layout: default
-title: "AWS Installation Guide"
-description: "Guide to deploying Cromwell + TES on AWS EKS (eu-north-1)"
+title: "AWS EKS Installation Guide — Cromwell + Funnel TES + Karpenter Spot"
+description: "Step-by-step guide to deploy Cromwell genomics workflows on AWS EKS with Karpenter Spot autoscaling, EFS shared storage, S3, ALB ingress, and Funnel TES task execution."
+keywords:
+  - AWS EKS
+  - Cromwell
+  - Funnel TES
+  - Karpenter Spot
+  - genomics workflow
+  - WDL
+  - EFS
+  - EKS autoscaling
+  - bioinformatics AWS
+  - Task Execution Service
+  - GA4GH TES
+  - nerdctl
+  - S3
 permalink: /aws/installation-guide/
 ---
 

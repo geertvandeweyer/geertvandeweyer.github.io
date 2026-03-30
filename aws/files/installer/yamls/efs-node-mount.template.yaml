@@ -1,0 +1,73 @@
+# DaemonSet that mounts the EFS filesystem at /mnt/efs on every workload node.
+# nerdctl launches task containers via the host containerd, so volume sources
+# must exist on the host filesystem — a pod-level PVC mount is not enough.
+# This DaemonSet uses nsenter to run in the host mount namespace and NFS-mounts
+# the EFS endpoint there once; the pause container keeps the pod alive.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: efs-node-mount
+  namespace: kube-system
+  labels:
+    app: efs-node-mount
+spec:
+  selector:
+    matchLabels:
+      app: efs-node-mount
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: efs-node-mount
+    spec:
+      # only target amd64 workload nodes (same selector as worker pods)
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations:
+      - operator: Exists
+      hostPID: true
+      hostNetwork: true
+      initContainers:
+      - name: mount-efs
+        # Call the host's own nsenter binary (via /host volume) to enter the
+        # host's mount namespace, then run mount there.
+        # hostPID: true is required so /proc/1/ns/mnt resolves to the host init.
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        securityContext:
+          privileged: true
+        command:
+        - sh
+        - "-c"
+        - |
+          mkdir -p /host/mnt/efs
+          if /host/usr/bin/nsenter --mount=/proc/1/ns/mnt -- mountpoint -q /mnt/efs; then
+            echo "/mnt/efs already mounted on host — nothing to do"
+          else
+            echo "Mounting EFS ${EFS_ID} at /mnt/efs on host..."
+            /host/usr/bin/nsenter --mount=/proc/1/ns/mnt -- mount -t nfs4 \
+              -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport \
+              ${EFS_ID}.efs.${AWS_DEFAULT_REGION}.amazonaws.com:/ /mnt/efs
+            echo "EFS mounted successfully"
+          fi
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+      containers:
+      - name: pause
+        image: public.ecr.aws/amazonlinux/amazonlinux:2023
+        command: ["sleep", "infinity"]
+        securityContext:
+          privileged: false
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 10m
+            memory: 16Mi
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory

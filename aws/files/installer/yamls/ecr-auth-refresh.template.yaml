@@ -1,0 +1,85 @@
+# DaemonSet: ecr-auth-refresh
+# Purpose: Write ECR auth credentials directly to /opt/ecr-auth/.docker/config.json
+#          on every worker node so that nerdctl (used by Funnel worker pods) can pull
+#          images without relying on docker-credential-ecr-login (which fails inside
+#          containers because it tries to use the Linux keychain / D-Bus).
+#
+# Strategy: Mount the host's /opt/ecr-auth/.docker as a hostPath volume.
+#           An init container (amazon/aws-cli) fetches tokens from ECR via IMDS and
+#           writes {"auths": {...}} directly into config.json.
+#           The main container refreshes every 6h (ECR tokens expire after 12h).
+#
+# Variables: AWS_ACCOUNT_ID, AWS_DEFAULT_REGION, ECR_IMAGE_REGION, TES_NAMESPACE
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ecr-auth-refresh
+  namespace: ${TES_NAMESPACE}
+  labels:
+    app: ecr-auth-refresh
+spec:
+  selector:
+    matchLabels:
+      app: ecr-auth-refresh
+  template:
+    metadata:
+      labels:
+        app: ecr-auth-refresh
+    spec:
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+      initContainers:
+      - name: write-ecr-creds
+        image: amazon/aws-cli:latest
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "${AWS_DEFAULT_REGION}"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          # Image registry (where Funnel image lives, e.g. eu-west-1)
+          R1="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_IMAGE_REGION}.amazonaws.com"
+          # Cluster registry (cluster region, e.g. eu-west-2)
+          R2="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+          T1=$(aws ecr get-login-password --region ${ECR_IMAGE_REGION})
+          T2=$(aws ecr get-login-password --region ${AWS_DEFAULT_REGION})
+          A1=$(printf '%s' "AWS:${T1}" | base64 -w 0)
+          A2=$(printf '%s' "AWS:${T2}" | base64 -w 0)
+          printf '{"auths":{"%s":{"auth":"%s"},"%s":{"auth":"%s"}}}\n' \
+            "$R1" "$A1" "$R2" "$A2" > /ecr-docker/config.json
+          echo "ECR credentials written to /opt/ecr-auth/.docker/config.json"
+          echo "config.json starts with: $(head -c 80 /ecr-docker/config.json)"
+        volumeMounts:
+        - name: ecr-docker
+          mountPath: /ecr-docker
+      containers:
+      - name: refresh
+        image: amazon/aws-cli:latest
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "${AWS_DEFAULT_REGION}"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          while true; do
+            sleep 21600
+            R1="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_IMAGE_REGION}.amazonaws.com"
+            R2="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+            T1=$(aws ecr get-login-password --region ${ECR_IMAGE_REGION}) || { echo "refresh failed ${ECR_IMAGE_REGION}"; continue; }
+            T2=$(aws ecr get-login-password --region ${AWS_DEFAULT_REGION}) || { echo "refresh failed ${AWS_DEFAULT_REGION}"; continue; }
+            A1=$(printf '%s' "AWS:${T1}" | base64 -w 0)
+            A2=$(printf '%s' "AWS:${T2}" | base64 -w 0)
+            printf '{"auths":{"%s":{"auth":"%s"},"%s":{"auth":"%s"}}}\n' \
+              "$R1" "$A1" "$R2" "$A2" > /ecr-docker/config.json
+            echo "ECR credentials refreshed at $(date)"
+          done
+        volumeMounts:
+        - name: ecr-docker
+          mountPath: /ecr-docker
+      volumes:
+      - name: ecr-docker
+        hostPath:
+          path: /opt/ecr-auth/.docker
+          type: DirectoryOrCreate

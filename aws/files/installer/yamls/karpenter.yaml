@@ -1,0 +1,185 @@
+# ── NodePools ───────────────────────────────────────────
+# NOTE: There is no "system" NodePool. System workloads (funnel, efs-ssh-mount,
+# kube-system controllers) run on the static eksctl baseline nodegroup node,
+# which is labeled workload-type=system at install time. Karpenter itself also
+# runs there (its affinity requires a non-Karpenter node). This keeps the
+# permanent arm64 footprint to a single t4g.medium instead of two nodes.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: workload
+spec:
+  weight: 50
+  template:
+    metadata:
+      labels:
+        workload-type: jobs
+        role: workflow
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.k8s.aws/instance-cpu-manufacturer
+          operator: In
+          values: ["intel"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c","m","r","t"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+        - key: karpenter.k8s.aws/instance-memory
+          operator: Gt
+          values: ["2047"]
+      nodeClassRef:
+        name: workload
+        kind: EC2NodeClass
+        group: karpenter.k8s.aws
+      expireAfter: 24h
+  limits:
+    cpu: 3220
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 10m
+
+# ── EC2NodeClasses ─────────────────────────────────────
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: workload
+spec:
+  role: "KarpenterNodeRole-TES"
+  amiSelectorTerms:
+    - alias: "al2023@v20260224"
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  blockDeviceMappings:
+    # root disk
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        deleteOnTermination: true
+        encrypted: true
+    # autoscaled disk, see userdata
+    #   - holds scratch
+    #   - holds docker images and containerd data (e.g. for caching)
+    #   - set throughput here if insufficient. 
+    - deviceName: /dev/xvdb
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 250
+        deleteOnTermination: true
+        encrypted: true
+  userData: |
+    #!/bin/bash
+    set -ex
+    
+    # ── ECR credential helper ───────────────────────────────
+    mkdir -p /opt/ecr-auth/bin /opt/ecr-auth/.docker
+    dnf install -y amazon-ecr-credential-helper
+    cp /usr/bin/docker-credential-ecr-login /opt/ecr-auth/bin/docker-credential-ecr-login
+    chmod +x /opt/ecr-auth/bin/docker-credential-ecr-login
+    echo '{"credsStore":"ecr-login"}' > /opt/ecr-auth/.docker/config.json
+    
+    # ── Wait for IMDSv2 ─────────────────────────────────────
+    for i in $(seq 1 20); do
+        TOKEN=$(curl -s -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+            http://169.254.169.254/latest/api/token || true)
+        [ -n "$TOKEN" ] && break
+        echo "IMDSv2 not ready ($i/20)..."
+        sleep 3
+    done
+    [ -n "$TOKEN" ] || { echo "IMDSv2 unavailable"; shutdown -h now; }
+    
+    # ── Identify data disk ──────────────────────────────────
+    # Wait up to 3 minutes for the secondary EBS volume to attach before probing
+    ROOT_PART=$(findmnt -n -o SOURCE /)
+    ROOT_DISK=$(lsblk -no PKNAME "$ROOT_PART")
+    DATA_DISK=""
+    for wait in $(seq 1 36); do
+        for d in /dev/nvme*n1 /dev/xvd[b-z]; do
+            [ -b "$d" ] || continue
+            [ "$(basename "$d")" = "$ROOT_DISK" ] && continue
+            DATA_DISK="$d"
+            break
+        done
+        [ -n "$DATA_DISK" ] && break
+        echo "Waiting for data disk (attempt $wait/36)..."
+        sleep 5
+    done
+    [ -n "$DATA_DISK" ] || { echo "No data disk found after 3 min"; shutdown -h now; }
+    
+    # ── Download amazon-ebs-autoscale with retries ─────────
+    MAX_RETRIES=5
+    for i in $(seq 1 $MAX_RETRIES); do
+        echo "Downloading amazon-ebs-autoscale (attempt $i/$MAX_RETRIES)..."
+        if aws s3 cp s3://cromwell-aws-cloudformation-templates/tes/amazon-ebs-autoscale.tgz /tmp/amazon-ebs-autoscale.tgz; then
+            break
+        fi
+        sleep 15
+    done
+    [ -f /tmp/amazon-ebs-autoscale.tgz ] || { echo "Failed to download amazon-ebs-autoscale"; shutdown -h now; }
+    
+    mkdir -p /opt/amazon-ebs-autoscale
+    tar -xzf /tmp/amazon-ebs-autoscale.tgz -C /opt/amazon-ebs-autoscale --strip-components=1
+    chmod +x /opt/amazon-ebs-autoscale/install.sh
+    
+    # ── Install autoscale ──────────────────────────────────
+    /opt/amazon-ebs-autoscale/install.sh \
+        --initial-device "$DATA_DISK" \
+        --file-system lvm.ext4 \
+        --mountpoint /var/funnel-work \
+        --volume-type gp3 \
+        --volume-iops 3000 \
+        --volume-throughput 250 \
+        --imdsv2
+    
+    # ── update mount options for performance ────────────────
+    systemctl stop ebs-autoscale || true
+    AUTOSCALE_DEV=$(awk '$2=="/var/funnel-work" {print $1}' /etc/fstab)
+    umount /var/funnel-work || true
+    mount -t ext4 -o noatime,data=writeback,barrier=0,commit=300 "$AUTOSCALE_DEV" /var/funnel-work
+    sed -i 's|ext4\tdefaults\t|ext4\tnoatime,data=writeback,barrier=0,commit=300\t|' /etc/fstab
+    systemctl daemon-reload
+    systemctl restart ebs-autoscale
+    
+    # ── Relocate containerd for / to Autoscaled volume ───────────────
+    systemctl stop kubelet containerd || true
+    mkdir -p /var/funnel-work/containerd /var/lib/containerd
+    cp -a /var/lib/containerd/. /var/funnel-work/containerd/ 2>/dev/null || true
+    mount --bind /var/funnel-work/containerd /var/lib/containerd
+    systemctl start containerd kubelet
+    
+    # ── Mount EFS at /mnt/efs if configured ────────────────
+    if [ -n "" ]; then
+      echo "Mounting EFS  at /mnt/efs..."
+      mkdir -p /mnt/efs
+      mount -t nfs4 \
+        -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport \
+        .efs.eu-west-2.amazonaws.com:/ /mnt/efs
+      # persist across reboots
+      echo ".efs.eu-west-2.amazonaws.com:/ /mnt/efs nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0" >> /etc/fstab
+      echo "EFS mounted at /mnt/efs"
+    fi
+    
+    echo "Workload node userdata completed"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "TES"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "TES"

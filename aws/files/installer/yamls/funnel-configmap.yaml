@@ -1,0 +1,218 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: funnel-config
+  namespace: funnel
+data:
+  # values substituted by envsubst when installer runs
+  WORKDIR: /var/funnel-work
+  EBS_AUTOSCALE: "true"
+  funnel.yaml: |
+    Database: boltdb
+    Compute: kubernetes
+
+    Server:
+      HTTPPort: "8000"
+      RPCPort: "9090"
+
+    BoltDB:
+      Path: /tmp/funnel.db
+
+    Worker:
+      WorkDir: /tmp/funnel-work-dir
+
+    Kubernetes:
+      Executor: kubernetes
+      ServiceAccount: funnel
+      Namespace: funnel      # ensure server operates in correct namespace
+      DisableReconciler: false
+      ReconcileRate: "600s"
+      WorkerTemplate: |
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: {{.TaskId}}
+          namespace: funnel
+          labels:
+            app: funnel-worker
+            task-id: {{.TaskId}}
+            task-name: {{.TaskNameLabel}}
+        spec:
+          backoffLimit: 10
+          completions: 1
+          template:
+            metadata:
+              annotations:
+                karpenter.sh/do-not-disrupt: "true"
+              labels:
+                app: funnel-worker
+                task-id: {{.TaskId}}
+                task-name: {{.TaskNameLabel}}
+            spec:
+              nodeSelector:
+                kubernetes.io/arch: amd64
+              # this must be the Kubernetes service account, not the IAM role
+              serviceAccountName: funnel
+              hostPID: true
+              restartPolicy: Never
+              initContainers:
+              - name: ecr-login-wait
+                image: busybox:latest
+                command: ["/bin/sh", "-c"]
+                args:
+                - |
+                  echo "Waiting for ECR credentials on node..."
+                  for i in $(seq 1 60); do
+                    if [ -s /ecr-docker/config.json ]; then
+                      echo "ECR credentials found after $((i*5))s."
+                      exit 0
+                    fi
+                    echo "  waiting... ($i/60)"
+                    sleep 5
+                  done
+                  echo "Timeout: ECR credentials not found after 300s"
+                  exit 1
+                volumeMounts:
+                - name: ecr-auth-docker
+                  mountPath: /ecr-docker
+              containers:
+              - name: funnel-worker-{{.TaskId}}
+                image: 391209680344.dkr.ecr.eu-west-1.amazonaws.com/funnel:multiarch-revc590523e-develop
+                imagePullPolicy: Always
+                securityContext:
+                  privileged: true
+                env:
+                - name: DOCKER_CONFIG
+                  value: /opt/ecr-auth/.docker
+                - name: PATH
+                  value: /opt/ecr-auth/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                args:
+                  - "worker"
+                  - "run"
+                  - "--config"
+                  - "/etc/config/funnel-worker.yaml"
+                  - "--taskID"
+                  - {{.TaskId}}
+                resources:
+                  requests:
+                    cpu: '{{if ne .Cpus 0}}{{.Cpus}}{{else}}1{{end}}'
+                    memory: '{{if ne .RamGb 0.0}}{{.RamGb | printf "%.0f"}}G{{else}}2G{{end}}'
+                    ephemeral-storage: '{{if ne .DiskGb 0.0}}{{.DiskGb | printf "%.0f"}}G{{else}}10G{{end}}'
+                  limits:
+                    cpu: '{{if ne .Cpus 0}}{{.Cpus}}{{else}}1{{end}}'
+                    memory: '{{if ne .RamGb 0.0}}{{.RamGb | printf "%.0f"}}G{{else}}2G{{end}}'
+                volumeMounts:
+                - name: config-volume
+                  mountPath: /etc/config
+                - name: work-dir
+                  mountPath: /var/funnel-work
+                - name: containerd-socket
+                  mountPath: /run/containerd
+                - name: containerd-data
+                  mountPath: /var/lib/containerd
+                - name: nerdctl-data
+                  mountPath: /var/lib/nerdctl
+                - name: ecr-auth
+                  mountPath: /opt/ecr-auth
+                - name: efs-data
+                  mountPath: /mnt/efs
+              volumes:
+              - name: config-volume
+                configMap:
+                  name: funnel-config
+              - name: work-dir
+                hostPath:
+                  path: /var/funnel-work
+                  type: DirectoryOrCreate
+              - name: containerd-socket
+                hostPath:
+                  path: /run/containerd
+                  type: Directory
+              - name: containerd-data
+                hostPath:
+                  path: /var/lib/containerd
+                  type: Directory
+              - name: nerdctl-data
+                hostPath:
+                  path: /var/lib/nerdctl
+                  type: DirectoryOrCreate
+              - name: ecr-auth
+                hostPath:
+                  path: /opt/ecr-auth
+                  type: DirectoryOrCreate
+              - name: ecr-auth-docker
+                hostPath:
+                  path: /opt/ecr-auth/.docker
+                  type: DirectoryOrCreate
+              - name: efs-data
+                persistentVolumeClaim:
+                  claimName: efs-pvc
+      PVTemplate: |
+        apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: "pv-{{.TaskId}}"
+          namespace: "funnel"
+        spec:
+          capacity:
+            storage: 10Gi
+          accessModes:
+            - ReadWriteOnce
+          persistentVolumeReclaimPolicy: Delete
+          hostPath:
+            path: /var/funnel-work   # use work directory rather than small /tmp
+            type: Directory
+          claimRef:
+            name: "funnel-pvc-{{.TaskId}}"
+            namespace: "funnel"
+      PVCTemplate: |
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: "funnel-pvc-{{.TaskId}}"
+          namespace: "funnel"
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+          volumeName: "pv-{{.TaskId}}"
+
+    AmazonS3:
+      Disabled: false
+
+    GenericS3:
+      - Bucket: tes-tasks-391209680344-eu-west-2
+        Region: eu-west-2
+
+  funnel-worker.yaml: |
+    Database: boltdb
+
+    BoltDB:
+      Path: /tmp/funnel.db
+
+    RPCClient:
+      # point at the ClusterIP service created below; earlier versions used
+      # "funnel" which no longer exists.  include the port variable so the
+      # config follows whatever 8000 is set to in env.variables.
+      # connect to the gRPC port (9090) rather than the HTTP API port
+      ServerAddress: "tes-service:9090"
+
+
+    Worker:
+      WorkDir: /var/funnel-work
+      Container:
+        DriverCommand: "nerdctl"
+        # use placeholder $ for dollar signs; these are restored after envsubst
+        RunCommand: "run -i --net=host {{if .RemoveContainer}}--rm{{end}} {{range $k, $v := .Env}}--env {{$k}}={{$v}} {{end}} {{if .Name}}--name {{.Name}}{{end}} {{if .Workdir}}--workdir {{.Workdir}}{{end}} {{range .Volumes}}--volume {{.HostPath}}:{{.ContainerPath}}:{{if .Readonly}}ro{{else}}rw{{end}} {{end}} --volume /mnt/efs:/mnt/efs:rw {{.Image}} {{.Command}}"
+        PullCommand: "pull {{.Image}}"
+        StopCommand: "rm -f {{.Name}}"
+
+    Kubernetes:
+      # use nerdctl on the node image (docker binary is not installed)
+      Executor: nerdctl
+      Namespace: funnel
+
+    AmazonS3:
+      Disabled: false
