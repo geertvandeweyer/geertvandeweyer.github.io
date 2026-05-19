@@ -240,7 +240,9 @@ See platform-specific guides for detailed security setup.
 
 ---
 
+## Support 
 
+[buy me a coffee](https://buymeacoffee.com/geertvandeweyer)
 
 **Last Updated**: March 28, 2026  
 **Version**: 1.0 (OVH testing finished)  
